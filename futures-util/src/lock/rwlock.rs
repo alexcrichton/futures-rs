@@ -22,8 +22,9 @@ impl<T: ?Sized> fmt::Debug for RwLock<T> {
         let state = self.state.load(Ordering::SeqCst);
         f.debug_struct("RwLock")
             .field("is_locked", &((state & IS_LOCKED) != 0))
-            .field("has_waiters", &((state & HAS_WAITERS) != 0))
-            .field("readers", &((state & READ_COUNT_MASK) >> 2))
+            .field("has_writers", &((state & HAS_WRITERS) != 0))
+            .field("has_readers", &((state & HAS_READERS) != 0))
+            .field("active_readers", &((state & READ_COUNT_MASK) >> 3))
             .finish()
     }
 }
@@ -51,10 +52,11 @@ impl Waiter {
 
 #[allow(clippy::identity_op)]
 const IS_LOCKED: usize = 1 << 0;
-const HAS_WAITERS: usize = 1 << 1;
-const ONE_READER: usize = 1 << 2;
+const HAS_WRITERS: usize = 1 << 1;
+const HAS_READERS: usize = 1 << 2;
+const ONE_READER: usize = 1 << 3;
 const READ_COUNT_MASK: usize = !(ONE_READER - 1);
-const MAX_READERS: usize = usize::max_value() >> 2;
+const MAX_READERS: usize = usize::max_value() >> 3;
 
 impl<T> RwLock<T> {
     /// Creates a new futures-aware read-write lock.
@@ -170,6 +172,9 @@ impl<T: ?Sized> RwLock<T> {
             // No need to check whether another waiter needs to be
             // woken up since no other readers depend on this.
             readers.remove(wait_key);
+            if readers.is_empty() {
+                self.state.fetch_and(!HAS_READERS, Ordering::Relaxed);
+            }
         }
     }
 
@@ -190,7 +195,7 @@ impl<T: ?Sized> RwLock<T> {
                 }
             }
             if writers.is_empty() {
-                self.state.fetch_and(!HAS_WAITERS, Ordering::Relaxed);
+                self.state.fetch_and(!HAS_WRITERS, Ordering::Relaxed);
             }
         }
     }
@@ -248,6 +253,9 @@ impl<'a, T: ?Sized> Future for RwLockReadFuture<'a, T> {
             let mut readers = rwlock.read_waiters.lock().unwrap();
             if self.wait_key == WAIT_KEY_NONE {
                 self.wait_key = readers.insert(Waiter::Waiting(cx.waker().clone()));
+                if readers.len() == 1 {
+                    rwlock.state.fetch_or(HAS_READERS, Ordering::Relaxed);
+                }
             } else {
                 readers[self.wait_key].register(cx.waker());
             }
@@ -322,7 +330,7 @@ impl<'a, T: ?Sized> Future for RwLockWriteFuture<'a, T> {
             if self.wait_key == WAIT_KEY_NONE {
                 self.wait_key = writers.insert(Waiter::Waiting(cx.waker().clone()));
                 if writers.len() == 1 {
-                    rwlock.state.fetch_or(HAS_WAITERS, Ordering::Relaxed);
+                    rwlock.state.fetch_or(HAS_WRITERS, Ordering::Relaxed);
                 }
             } else {
                 writers[self.wait_key].register(cx.waker());
@@ -373,7 +381,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockReadGuard<'_, T> {
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
         let old_state = self.rwlock.state.fetch_sub(ONE_READER, Ordering::SeqCst);
-        if old_state & READ_COUNT_MASK == ONE_READER && old_state & HAS_WAITERS != 0 {
+        if old_state & READ_COUNT_MASK == ONE_READER && old_state & HAS_WRITERS != 0 {
             let mut writers = self.rwlock.write_waiters.lock().unwrap();
             if let Some((_, waiter)) = writers.iter_mut().next() {
                 waiter.wake();
@@ -414,7 +422,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockWriteGuard<'_, T> {
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         let old_state = self.rwlock.state.fetch_and(!IS_LOCKED, Ordering::AcqRel);
-        match (old_state & HAS_WAITERS, old_state & READ_COUNT_MASK) {
+        match (old_state & HAS_WRITERS, old_state & HAS_READERS) {
             (0, 0) => {}
             (0, _) => {
                 let mut readers = self.rwlock.read_waiters.lock().unwrap();
