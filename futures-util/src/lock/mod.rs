@@ -6,7 +6,14 @@
 #[cfg(feature = "std")]
 mod mutex;
 #[cfg(feature = "std")]
-pub use self::mutex::{MappedMutexGuard, Mutex, MutexLockFuture, MutexGuard};
+pub use self::mutex::{MappedMutexGuard, Mutex, MutexGuard, MutexLockFuture};
+
+#[cfg(feature = "std")]
+mod rwlock;
+#[cfg(feature = "std")]
+pub use self::rwlock::{
+    RwLock, RwLockReadFuture, RwLockReadGuard, RwLockWriteFuture, RwLockWriteGuard,
+};
 
 #[cfg(any(feature = "bilock", feature = "sink", feature = "io"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "bilock")))]
@@ -18,3 +25,5 @@ pub use self::bilock::{BiLock, BiLockAcquire, BiLockGuard, ReuniteError};
 #[cfg(any(feature = "sink", feature = "io"))]
 #[cfg(not(feature = "bilock"))]
 pub(crate) use self::bilock::BiLock;
+#[cfg(feature = "bilock")]
+pub use self::bilock::{BiLock, BiLockAcquire, BiLockGuard, ReuniteError};
