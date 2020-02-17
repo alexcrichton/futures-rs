@@ -1,19 +1,18 @@
+use crate::lock::waiter::WaiterSet;
 use futures_core::future::{FusedFuture, Future};
-use futures_core::task::{Context, Poll, Waker};
-use slab::Slab;
+use futures_core::task::{Context, Poll};
 use std::cell::UnsafeCell;
+use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex as StdMutex;
-use std::{fmt, mem};
 
 /// A futures-aware read-write lock.
 pub struct RwLock<T: ?Sized> {
     state: AtomicUsize,
-    read_waiters: StdMutex<Slab<Waiter>>,
-    write_waiters: StdMutex<Slab<Waiter>>,
+    readers: WaiterSet,
+    writers: WaiterSet,
     value: UnsafeCell<T>,
 }
 
@@ -22,49 +21,24 @@ impl<T: ?Sized> fmt::Debug for RwLock<T> {
         let state = self.state.load(Ordering::SeqCst);
         f.debug_struct("RwLock")
             .field("is_locked", &((state & IS_LOCKED) != 0))
-            .field("has_writers", &((state & HAS_WRITERS) != 0))
-            .field("has_readers", &((state & HAS_READERS) != 0))
-            .field("active_readers", &((state & READ_COUNT_MASK) >> 3))
+            .field("readers", &((state & READ_COUNT) >> 1))
             .finish()
-    }
-}
-
-enum Waiter {
-    Waiting(Waker),
-    Woken,
-}
-
-impl Waiter {
-    fn register(&mut self, waker: &Waker) {
-        match self {
-            Waiter::Waiting(w) if waker.will_wake(w) => {}
-            _ => *self = Waiter::Waiting(waker.clone()),
-        }
-    }
-
-    fn wake(&mut self) {
-        match mem::replace(self, Waiter::Woken) {
-            Waiter::Waiting(waker) => waker.wake(),
-            Waiter::Woken => {}
-        }
     }
 }
 
 #[allow(clippy::identity_op)]
 const IS_LOCKED: usize = 1 << 0;
-const HAS_WRITERS: usize = 1 << 1;
-const HAS_READERS: usize = 1 << 2;
-const ONE_READER: usize = 1 << 3;
-const READ_COUNT_MASK: usize = !(ONE_READER - 1);
-const MAX_READERS: usize = usize::max_value() >> 3;
+const ONE_READER: usize = 1 << 1;
+const READ_COUNT: usize = !(ONE_READER - 1);
+const MAX_READERS: usize = usize::max_value() >> 1;
 
 impl<T> RwLock<T> {
     /// Creates a new futures-aware read-write lock.
     pub fn new(t: T) -> RwLock<T> {
         RwLock {
             state: AtomicUsize::new(0),
-            read_waiters: StdMutex::new(Slab::new()),
-            write_waiters: StdMutex::new(Slab::new()),
+            readers: WaiterSet::new(),
+            writers: WaiterSet::new(),
             value: UnsafeCell::new(t),
         }
     }
@@ -165,40 +139,6 @@ impl<T: ?Sized> RwLock<T> {
     pub fn get_mut(&mut self) -> &mut T {
         unsafe { &mut *self.value.get() }
     }
-
-    fn remove_reader(&self, wait_key: usize) {
-        if wait_key != WAIT_KEY_NONE {
-            let mut readers = self.read_waiters.lock().unwrap();
-            // No need to check whether another waiter needs to be
-            // woken up since no other readers depend on this.
-            readers.remove(wait_key);
-            if readers.is_empty() {
-                self.state.fetch_and(!HAS_READERS, Ordering::Relaxed);
-            }
-        }
-    }
-
-    fn remove_writer(&self, wait_key: usize, wake_another: bool) {
-        if wait_key != WAIT_KEY_NONE {
-            let mut writers = self.write_waiters.lock().unwrap();
-            match writers.remove(wait_key) {
-                Waiter::Waiting(_) => {}
-                Waiter::Woken => {
-                    // We were awoken, but then dropped before we could
-                    // wake up to acquire the lock. Wake up another
-                    // waiter.
-                    if wake_another {
-                        if let Some((_, waiter)) = writers.iter_mut().next() {
-                            waiter.wake();
-                        }
-                    }
-                }
-            }
-            if writers.is_empty() {
-                self.state.fetch_and(!HAS_WRITERS, Ordering::Relaxed);
-            }
-        }
-    }
 }
 
 // Sentinel for when no slot in the `Slab` has been dedicated to this object.
@@ -244,27 +184,23 @@ impl<'a, T: ?Sized> Future for RwLockReadFuture<'a, T> {
             .expect("polled RwLockReadFuture after completion");
 
         if let Some(lock) = rwlock.try_read() {
-            rwlock.remove_reader(self.wait_key);
+            if self.wait_key != WAIT_KEY_NONE {
+                rwlock.readers.remove(self.wait_key);
+            }
             self.rwlock = None;
             return Poll::Ready(lock);
         }
 
-        {
-            let mut readers = rwlock.read_waiters.lock().unwrap();
-            if self.wait_key == WAIT_KEY_NONE {
-                self.wait_key = readers.insert(Waiter::Waiting(cx.waker().clone()));
-                if readers.len() == 1 {
-                    rwlock.state.fetch_or(HAS_READERS, Ordering::Relaxed);
-                }
-            } else {
-                readers[self.wait_key].register(cx.waker());
-            }
+        if self.wait_key == WAIT_KEY_NONE {
+            self.wait_key = rwlock.readers.insert(cx.waker());
+        } else {
+            rwlock.readers.register(self.wait_key, cx.waker());
         }
 
         // Ensure that we haven't raced `RwLockWriteGuard::drop`'s unlock path by
         // attempting to acquire the lock again.
         if let Some(lock) = rwlock.try_read() {
-            rwlock.remove_reader(self.wait_key);
+            rwlock.readers.remove(self.wait_key);
             self.rwlock = None;
             return Poll::Ready(lock);
         }
@@ -276,7 +212,9 @@ impl<'a, T: ?Sized> Future for RwLockReadFuture<'a, T> {
 impl<T: ?Sized> Drop for RwLockReadFuture<'_, T> {
     fn drop(&mut self) {
         if let Some(rwlock) = self.rwlock {
-            rwlock.remove_reader(self.wait_key);
+            if self.wait_key != WAIT_KEY_NONE {
+                rwlock.readers.remove(self.wait_key);
+            }
         }
     }
 }
@@ -320,28 +258,24 @@ impl<'a, T: ?Sized> Future for RwLockWriteFuture<'a, T> {
             .expect("polled RwLockWriteFuture after completion");
 
         if let Some(lock) = rwlock.try_write() {
-            rwlock.remove_writer(self.wait_key, false);
+            if self.wait_key != WAIT_KEY_NONE {
+                rwlock.writers.remove(self.wait_key);
+            }
             self.rwlock = None;
             return Poll::Ready(lock);
         }
 
-        {
-            let mut writers = rwlock.write_waiters.lock().unwrap();
-            if self.wait_key == WAIT_KEY_NONE {
-                self.wait_key = writers.insert(Waiter::Waiting(cx.waker().clone()));
-                if writers.len() == 1 {
-                    rwlock.state.fetch_or(HAS_WRITERS, Ordering::Relaxed);
-                }
-            } else {
-                writers[self.wait_key].register(cx.waker());
-            }
+        if self.wait_key == WAIT_KEY_NONE {
+            self.wait_key = rwlock.writers.insert(cx.waker());
+        } else {
+            rwlock.writers.register(self.wait_key, cx.waker());
         }
 
         // Ensure that we haven't raced `RwLockWriteGuard::drop` or
         // `RwLockReadGuard::drop`'s unlock path by attempting to acquire
         // the lock again.
         if let Some(lock) = rwlock.try_write() {
-            rwlock.remove_writer(self.wait_key, false);
+            rwlock.writers.remove(self.wait_key);
             self.rwlock = None;
             return Poll::Ready(lock);
         }
@@ -353,11 +287,13 @@ impl<'a, T: ?Sized> Future for RwLockWriteFuture<'a, T> {
 impl<T: ?Sized> Drop for RwLockWriteFuture<'_, T> {
     fn drop(&mut self) {
         if let Some(rwlock) = self.rwlock {
-            // This future was dropped before it acquired the rwlock.
-            //
-            // Remove ourselves from the map, waking up another waiter if we
-            // had been awoken to acquire the lock.
-            rwlock.remove_writer(self.wait_key, true);
+            if self.wait_key != WAIT_KEY_NONE {
+                // This future was dropped before it acquired the rwlock.
+                //
+                // Remove ourselves from the map, waking up another waiter if we
+                // had been awoken to acquire the lock.
+                rwlock.writers.cancel(self.wait_key);
+            }
         }
     }
 }
@@ -381,11 +317,8 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockReadGuard<'_, T> {
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
         let old_state = self.rwlock.state.fetch_sub(ONE_READER, Ordering::SeqCst);
-        if old_state & READ_COUNT_MASK == ONE_READER && old_state & HAS_WRITERS != 0 {
-            let mut writers = self.rwlock.write_waiters.lock().unwrap();
-            if let Some((_, waiter)) = writers.iter_mut().next() {
-                waiter.wake();
-            }
+        if old_state & READ_COUNT == ONE_READER {
+            self.rwlock.writers.notify_any();
         }
     }
 }
@@ -421,21 +354,9 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        let old_state = self.rwlock.state.fetch_and(!IS_LOCKED, Ordering::AcqRel);
-        match (old_state & HAS_WRITERS, old_state & HAS_READERS) {
-            (0, 0) => {}
-            (0, _) => {
-                let mut readers = self.rwlock.read_waiters.lock().unwrap();
-                for (_, waiter) in readers.iter_mut() {
-                    waiter.wake();
-                }
-            }
-            _ => {
-                let mut writers = self.rwlock.write_waiters.lock().unwrap();
-                if let Some((_, waiter)) = writers.iter_mut().next() {
-                    waiter.wake();
-                }
-            }
+        self.rwlock.state.store(0, Ordering::SeqCst);
+        if !self.rwlock.readers.notify_all() {
+            self.rwlock.writers.notify_any();
         }
     }
 }

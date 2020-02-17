@@ -14,6 +14,8 @@ mod rwlock;
 pub use self::rwlock::{
     RwLock, RwLockReadFuture, RwLockReadGuard, RwLockWriteFuture, RwLockWriteGuard,
 };
+#[cfg(feature = "std")]
+pub(crate) mod waiter;
 
 #[cfg(any(feature = "bilock", feature = "sink", feature = "io"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "bilock")))]
