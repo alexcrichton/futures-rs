@@ -5,12 +5,70 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct State {
+    ins: AtomicUsize,
+    out: AtomicUsize,
+}
+
+struct AtomicState {
+    read: State,
+    write: State,
+}
+
+impl AtomicState {
+    #[inline]
+    fn insert_writer(&self) -> usize {
+        self.write.ins.fetch_add(1, Ordering::SeqCst)
+    }
+
+    #[inline]
+    fn remove_writer(&self) -> usize {
+        self.write.out.fetch_add(1, Ordering::SeqCst)
+    }
+
+    #[inline]
+    fn remove_reader(&self) -> usize {
+        self.read.out.fetch_add(ONE_READER, Ordering::SeqCst)
+    }
+
+    #[inline]
+    fn reserve_reader(&self) -> usize {
+        self.read.ins.fetch_add(ONE_READER, Ordering::SeqCst) & WRITE_BITS
+    }
+
+    #[inline]
+    fn reserve_writer(&self, phase: usize) -> usize {
+        self.read
+            .ins
+            .fetch_add(ONE_WRITER | phase, Ordering::SeqCst)
+    }
+
+    #[inline]
+    fn phase(&self) -> usize {
+        self.read.ins.load(Ordering::Relaxed) & WRITE_BITS
+    }
+
+    #[inline]
+    fn clear_phase(&self) -> usize {
+        self.read.ins.fetch_and(!WRITE_BITS, Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn finished_readers(&self) -> usize {
+        self.read.out.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn finished_writers(&self) -> usize {
+        self.write.out.load(Ordering::Relaxed)
+    }
+}
 
 /// A futures-aware read-write lock.
 pub struct RwLock<T: ?Sized> {
-    state: AtomicUsize,
+    atomic: AtomicState,
     readers: WaiterSet,
     writers: WaiterSet,
     value: UnsafeCell<T>,
@@ -18,25 +76,33 @@ pub struct RwLock<T: ?Sized> {
 
 impl<T: ?Sized> fmt::Debug for RwLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = self.state.load(Ordering::SeqCst);
-        f.debug_struct("RwLock")
-            .field("is_locked", &((state & IS_LOCKED) != 0))
-            .field("readers", &((state & READ_COUNT) >> 1))
-            .finish()
+        f.debug_struct("RwLock").finish()
     }
 }
 
 #[allow(clippy::identity_op)]
-const IS_LOCKED: usize = 1 << 0;
-const ONE_READER: usize = 1 << 1;
-const READ_COUNT: usize = !(ONE_READER - 1);
-const MAX_READERS: usize = usize::max_value() >> 1;
+const PHASE: usize = 1 << 0;
+const ONE_WRITER: usize = 1 << 1;
+const ONE_READER: usize = 1 << 2;
+const WRITE_BITS: usize = ONE_WRITER | PHASE;
+
+// Sentinel for when no slot in the `Slab` has been dedicated to this object.
+const WAIT_KEY_NONE: usize = usize::max_value();
 
 impl<T> RwLock<T> {
     /// Creates a new futures-aware read-write lock.
     pub fn new(t: T) -> RwLock<T> {
         RwLock {
-            state: AtomicUsize::new(0),
+            atomic: AtomicState {
+                read: State {
+                    ins: AtomicUsize::new(0),
+                    out: AtomicUsize::new(0),
+                },
+                write: State {
+                    ins: AtomicUsize::new(0),
+                    out: AtomicUsize::new(0),
+                },
+            },
             readers: WaiterSet::new(),
             writers: WaiterSet::new(),
             value: UnsafeCell::new(t),
@@ -59,45 +125,6 @@ impl<T> RwLock<T> {
 }
 
 impl<T: ?Sized> RwLock<T> {
-    /// Attempt to acquire a lock with shared read access immediately.
-    ///
-    /// If the lock is currently held by a writer, this will return `None`.
-    pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
-        let mut state = self.state.load(Ordering::Acquire);
-
-        loop {
-            if state & IS_LOCKED != 0 {
-                return None;
-            }
-
-            if state > MAX_READERS {
-                process::abort();
-            }
-
-            match self.state.compare_exchange_weak(
-                state,
-                state + ONE_READER,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Some(RwLockReadGuard { rwlock: self }),
-                Err(s) => state = s,
-            }
-        }
-    }
-
-    /// Attempt to acquire a lock with exclusive write access immediately.
-    ///
-    /// If there are any other locks, either for read or write access, this
-    /// will return `None`.
-    pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        if self.state.compare_and_swap(0, IS_LOCKED, Ordering::SeqCst) == 0 {
-            Some(RwLockWriteGuard { rwlock: self })
-        } else {
-            None
-        }
-    }
-
     /// Acquire a read access lock asynchronously.
     ///
     /// This method returns a future that will resolve once all write access
@@ -105,6 +132,7 @@ impl<T: ?Sized> RwLock<T> {
     pub fn read(&self) -> RwLockReadFuture<'_, T> {
         RwLockReadFuture {
             rwlock: Some(self),
+            ticket: None,
             wait_key: WAIT_KEY_NONE,
         }
     }
@@ -116,6 +144,7 @@ impl<T: ?Sized> RwLock<T> {
     pub fn write(&self) -> RwLockWriteFuture<'_, T> {
         RwLockWriteFuture {
             rwlock: Some(self),
+            ticket: None,
             wait_key: WAIT_KEY_NONE,
         }
     }
@@ -133,7 +162,7 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// let mut rwlock = RwLock::new(0);
     /// *rwlock.get_mut() = 10;
-    /// assert_eq!(*rwlock.lock().await, 10);
+    /// assert_eq!(*rwlock.read().await, 10);
     /// # });
     /// ```
     pub fn get_mut(&mut self) -> &mut T {
@@ -141,14 +170,27 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-// Sentinel for when no slot in the `Slab` has been dedicated to this object.
-const WAIT_KEY_NONE: usize = usize::max_value();
+#[derive(Debug)]
+enum Ticket {
+    Read(usize),
+    Write(usize),
+}
+
+impl Ticket {
+    fn value(&self) -> usize {
+        match self {
+            Ticket::Read(value) => *value,
+            Ticket::Write(value) => *value,
+        }
+    }
+}
 
 /// A future which resolves when the target read access lock has been successfully
 /// acquired.
 pub struct RwLockReadFuture<'a, T: ?Sized> {
     // `None` indicates that the mutex was successfully acquired.
     rwlock: Option<&'a RwLock<T>>,
+    ticket: Option<Ticket>,
     wait_key: usize,
 }
 
@@ -157,6 +199,7 @@ impl<T: ?Sized> fmt::Debug for RwLockReadFuture<'_, T> {
         f.debug_struct("RwLockReadFuture")
             .field("was_acquired", &self.rwlock.is_none())
             .field("rwlock", &self.rwlock)
+            .field("ticket", &self.ticket)
             .field(
                 "wait_key",
                 &(if self.wait_key == WAIT_KEY_NONE {
@@ -183,38 +226,39 @@ impl<'a, T: ?Sized> Future for RwLockReadFuture<'a, T> {
             .rwlock
             .expect("polled RwLockReadFuture after completion");
 
-        if let Some(lock) = rwlock.try_read() {
+        // The ticket is defined by the write bits stored within the read-in count
+        let ticket = self
+            .ticket
+            .get_or_insert_with(|| Ticket::Read(rwlock.atomic.reserve_reader()))
+            .value();
+
+        // Safe to create guard when either there are no writers (ticket == 0) or if
+        // at least one of the two write bits change.
+        // Writers always wait until the current reader phase completes before acquiring
+        // the lock; thus the PHASE bit both maintains the read-write condition and
+        // prevents deadlock in the case that this line isn't reached before a writer sets
+        // the ONE_WRITER bit.
+        if ticket == 0 || ticket != rwlock.atomic.phase() {
             if self.wait_key != WAIT_KEY_NONE {
                 rwlock.readers.remove(self.wait_key);
             }
             self.rwlock = None;
-            return Poll::Ready(lock);
-        }
-
-        if self.wait_key == WAIT_KEY_NONE {
-            self.wait_key = rwlock.readers.insert(cx.waker());
+            Poll::Ready(RwLockReadGuard { rwlock })
         } else {
-            rwlock.readers.register(self.wait_key, cx.waker());
+            if self.wait_key == WAIT_KEY_NONE {
+                self.wait_key = rwlock.readers.insert(cx.waker());
+            } else {
+                rwlock.readers.register(self.wait_key, cx.waker());
+            }
+            Poll::Pending
         }
-
-        // Ensure that we haven't raced `RwLockWriteGuard::drop`'s unlock path by
-        // attempting to acquire the lock again.
-        if let Some(lock) = rwlock.try_read() {
-            rwlock.readers.remove(self.wait_key);
-            self.rwlock = None;
-            return Poll::Ready(lock);
-        }
-
-        Poll::Pending
     }
 }
 
 impl<T: ?Sized> Drop for RwLockReadFuture<'_, T> {
     fn drop(&mut self) {
-        if let Some(rwlock) = self.rwlock {
-            if self.wait_key != WAIT_KEY_NONE {
-                rwlock.readers.remove(self.wait_key);
-            }
+        if self.rwlock.is_some() && self.wait_key != WAIT_KEY_NONE {
+            panic!("RwLockReadFuture dropped before completion");
         }
     }
 }
@@ -223,6 +267,7 @@ impl<T: ?Sized> Drop for RwLockReadFuture<'_, T> {
 /// acquired.
 pub struct RwLockWriteFuture<'a, T: ?Sized> {
     rwlock: Option<&'a RwLock<T>>,
+    ticket: Option<Ticket>,
     wait_key: usize,
 }
 
@@ -257,43 +302,62 @@ impl<'a, T: ?Sized> Future for RwLockWriteFuture<'a, T> {
             .rwlock
             .expect("polled RwLockWriteFuture after completion");
 
-        if let Some(lock) = rwlock.try_write() {
-            if self.wait_key != WAIT_KEY_NONE {
-                rwlock.writers.remove(self.wait_key);
+        match self.ticket {
+            None => {
+                let ticket = rwlock.atomic.insert_writer();
+                self.ticket = Some(Ticket::Write(ticket));
+                if ticket == rwlock.atomic.finished_writers() {
+                    // Note that the WRITE_BITS are always cleared at this point.
+                    let ticket = rwlock.atomic.reserve_writer(ticket & PHASE);
+                    self.ticket = Some(Ticket::Read(ticket));
+                    if ticket == rwlock.atomic.finished_readers() {
+                        self.rwlock = None;
+                        Poll::Ready(RwLockWriteGuard { rwlock })
+                    } else {
+                        self.wait_key = rwlock.writers.insert(cx.waker());
+                        Poll::Pending
+                    }
+                } else {
+                    self.wait_key = rwlock.writers.insert(cx.waker());
+                    Poll::Pending
+                }
             }
-            self.rwlock = None;
-            return Poll::Ready(lock);
+            Some(Ticket::Write(ticket)) => {
+                if ticket == rwlock.atomic.finished_writers() {
+                    // Note that the WRITE_BITS are always cleared at this point.
+                    let ticket = rwlock.atomic.reserve_writer(ticket & PHASE);
+                    self.ticket = Some(Ticket::Read(ticket));
+                    if ticket == rwlock.atomic.finished_readers() {
+                        rwlock.writers.remove(self.wait_key);
+                        self.rwlock = None;
+                        Poll::Ready(RwLockWriteGuard { rwlock })
+                    } else {
+                        rwlock.writers.register(self.wait_key, cx.waker());
+                        Poll::Pending
+                    }
+                } else {
+                    rwlock.writers.register(self.wait_key, cx.waker());
+                    Poll::Pending
+                }
+            }
+            Some(Ticket::Read(ticket)) => {
+                if ticket == rwlock.atomic.finished_readers() {
+                    rwlock.writers.remove(self.wait_key);
+                    self.rwlock = None;
+                    Poll::Ready(RwLockWriteGuard { rwlock })
+                } else {
+                    rwlock.writers.register(self.wait_key, cx.waker());
+                    Poll::Pending
+                }
+            }
         }
-
-        if self.wait_key == WAIT_KEY_NONE {
-            self.wait_key = rwlock.writers.insert(cx.waker());
-        } else {
-            rwlock.writers.register(self.wait_key, cx.waker());
-        }
-
-        // Ensure that we haven't raced `RwLockWriteGuard::drop` or
-        // `RwLockReadGuard::drop`'s unlock path by attempting to acquire
-        // the lock again.
-        if let Some(lock) = rwlock.try_write() {
-            rwlock.writers.remove(self.wait_key);
-            self.rwlock = None;
-            return Poll::Ready(lock);
-        }
-
-        Poll::Pending
     }
 }
 
 impl<T: ?Sized> Drop for RwLockWriteFuture<'_, T> {
     fn drop(&mut self) {
-        if let Some(rwlock) = self.rwlock {
-            if self.wait_key != WAIT_KEY_NONE {
-                // This future was dropped before it acquired the rwlock.
-                //
-                // Remove ourselves from the map, waking up another waiter if we
-                // had been awoken to acquire the lock.
-                rwlock.writers.cancel(self.wait_key);
-            }
+        if self.rwlock.is_some() && self.wait_key != WAIT_KEY_NONE {
+            panic!("RwLockWriteFuture dropped before completion");
         }
     }
 }
@@ -316,15 +380,14 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockReadGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
-        let old_state = self.rwlock.state.fetch_sub(ONE_READER, Ordering::SeqCst);
-        if old_state & READ_COUNT == ONE_READER {
-            self.rwlock.writers.notify_any();
-        }
+        self.rwlock.atomic.remove_reader();
+        self.rwlock.writers.notify_all();
     }
 }
 
 impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
     type Target = T;
+
     fn deref(&self) -> &T {
         unsafe { &*self.rwlock.value.get() }
     }
@@ -354,15 +417,16 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        self.rwlock.state.store(0, Ordering::SeqCst);
-        if !self.rwlock.readers.notify_all() {
-            self.rwlock.writers.notify_any();
-        }
+        self.rwlock.atomic.remove_writer();
+        self.rwlock.atomic.clear_phase();
+        self.rwlock.writers.notify_all();
+        self.rwlock.readers.notify_all();
     }
 }
 
 impl<T: ?Sized> Deref for RwLockWriteGuard<'_, T> {
     type Target = T;
+
     fn deref(&self) -> &T {
         unsafe { &*self.rwlock.value.get() }
     }
@@ -388,13 +452,3 @@ unsafe impl<T: ?Sized + Sync> Sync for RwLockReadGuard<'_, T> {}
 
 unsafe impl<T: ?Sized + Send> Send for RwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for RwLockWriteGuard<'_, T> {}
-
-#[test]
-fn test_rwlock_guard_debug_not_recurse() {
-    let rwlock = RwLock::new(42);
-    let guard = rwlock.try_read().unwrap();
-    let _ = format!("{:?}", guard);
-    drop(guard);
-    let guard = rwlock.try_write().unwrap();
-    let _ = format!("{:?}", guard);
-}

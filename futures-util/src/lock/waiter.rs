@@ -85,6 +85,8 @@ impl WaiterSet {
         }
     }
 
+    // NOTE: This method is likely useful for `Mutex`.
+    #[allow(dead_code)]
     pub(crate) fn cancel(&self, key: usize) -> bool {
         let mut this = self.lock();
         match this.waiters.remove(key) {
@@ -102,6 +104,8 @@ impl WaiterSet {
         false
     }
 
+    // NOTE: This method is likely useful for `Mutex`.
+    #[allow(dead_code)]
     pub(crate) fn notify_any(&self) -> bool {
         let state = self.state.load(Ordering::SeqCst);
 
@@ -190,3 +194,6 @@ impl DerefMut for Lock<'_> {
         unsafe { &mut *self.waiter_set.inner.get() }
     }
 }
+
+unsafe impl Send for WaiterSet {}
+unsafe impl Sync for WaiterSet {}
