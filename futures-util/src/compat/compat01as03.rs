@@ -383,10 +383,6 @@ mod io {
         /// # futures::executor::block_on(async {
         /// use futures::io::AsyncReadExt;
         /// use futures_util::compat::AsyncRead01CompatExt;
-        /// 
-        /// fn create_async_read_cursor<'a>(input: &'a [u8]) -> impl futures::io::AsyncRead + Unpin + 'a {
-        ///     std::io::Cursor::new(input).compat()
-        /// }
         ///
         /// let input = b"Hello World!";
         /// let reader /* : impl tokio_io::AsyncRead */ = std::io::Cursor::new(input);

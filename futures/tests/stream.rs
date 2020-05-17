@@ -311,6 +311,7 @@ fn take_until() {
 }
 
 #[cfg(feature = "executor")] // executor::
+#[test]
 #[should_panic]
 fn ready_chunks_panic_on_cap_zero() {
     use futures::channel::mpsc;
