@@ -19,7 +19,7 @@ use pin_project::pin_project;
 const NONE: u8 = 0;
 
 /// Indicates that `futures` need to be polled.
-const NEED_TO_POLL_FUTURES: u8 = 0b1;
+const NEED_TO_POLL_FUTURES: u8 = 1;
 
 /// Indicates that `stream` needs to be polled.
 const NEED_TO_POLL_STREAM: u8 = 0b10;
@@ -30,7 +30,7 @@ const NEED_TO_POLL: u8 = NEED_TO_POLL_FUTURES | NEED_TO_POLL_STREAM;
 /// Indicates that current stream is polled at the moment.
 const POLLING: u8 = 0b100;
 
-// Indicates that we already called one of wakers.
+// Indicates that it already called one of wakers.
 const WOKEN: u8 = 0b1000;
 
 /// State which used to determine what needs to be polled, and are we polling
@@ -50,20 +50,20 @@ impl SharedPollState {
 
     /// Swaps state with `POLLING`, returning previous state.
     fn begin_polling(&self) -> u8 {
-        self.state.swap(POLLING, Ordering::AcqRel)
+        self.state.swap(POLLING, Ordering::SeqCst)
     }
 
     /// Performs bitwise or with `to_poll` and given state, returning
     /// previous state.
     fn set_or(&self, to_poll: u8) -> u8 {
-        self.state.fetch_or(to_poll, Ordering::AcqRel)
+        self.state.fetch_or(to_poll, Ordering::SeqCst)
     }
 
     /// Performs bitwise or with `to_poll` and current state, stores result
     /// with non-`POLLING` state, and returns disjunction result.
-    fn end_polling(&self, to_poll: u8) -> u8 {
-        let to_poll = to_poll | self.state.load(Ordering::Acquire);
-        self.state.store(to_poll & !POLLING & !WOKEN, Ordering::Release);
+    fn end_polling(&self, mut to_poll: u8) -> u8 {
+        to_poll |= self.state.swap(!POLLING & !WOKEN, Ordering::SeqCst);
+        self.state.fetch_and(to_poll & !POLLING & !WOKEN, Ordering::SeqCst);
         to_poll
     }
 }
@@ -319,7 +319,7 @@ where
 
         let poll_state_value = this.poll_state.end_polling(need_to_poll_next);
 
-        let is_done = this.futures.is_empty() && *this.is_stream_done;
+        let is_done = *this.is_stream_done && this.futures.is_empty();
 
         if !is_done && poll_state_value & WOKEN == NONE && poll_state_value & NEED_TO_POLL != NONE
             && (polling_with_two_wakers
