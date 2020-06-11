@@ -268,19 +268,21 @@ where
                         // stream
                         poll_state_value |= NEED_TO_POLL_FUTURES;
                         polling_with_two_wakers = false;
+                        *this.is_stream_done = false;
                     }
                     Poll::Ready(None) => {
-                        *this.is_stream_done = true;
                         // Polling futures in current iteration with the same context
                         // is ok because we already received `Poll::Ready` from
                         // stream
                         polling_with_two_wakers = false;
+                        *this.is_stream_done = true;
                     }
                     Poll::Pending => {
                         stream_will_be_woken = true;
                         if !polling_with_two_wakers {
                             need_to_poll_next |= NEED_TO_POLL_STREAM;
                         }
+                        *this.is_stream_done = false;
                     }
                 }
             } else {
@@ -329,10 +331,10 @@ where
             ctx.waker().wake_by_ref();
         }
 
-        if next_item.is_some() || is_done {
-            Poll::Ready(next_item)
-        } else {
+        if next_item.is_none() && !is_done {
             Poll::Pending
+        } else {
+            Poll::Ready(next_item)
         }
     }
 }
