@@ -15,6 +15,8 @@
 // Can be removed as of minimum supported 1.40 or if https://github.com/rust-lang/rust-clippy/issues/3941
 // get's implemented.
 #![allow(clippy::mem_replace_with_default)]
+// clippy bug: https://github.com/rust-lang/rust-clippy/issues/5704
+#![allow(clippy::unnested_or_patterns)]
 
 #![doc(test(attr(deny(warnings), allow(dead_code, unused_assignments, unused_variables))))]
 
