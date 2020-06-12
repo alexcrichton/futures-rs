@@ -25,7 +25,7 @@ const NEED_TO_POLL_FUTURES: u8 = 1;
 const NEED_TO_POLL_STREAM: u8 = 0b10;
 
 /// Indicates that it needs to poll something.
-const NEED_TO_POLL: u8 = NEED_TO_POLL_FUTURES | NEED_TO_POLL_STREAM;
+const NEED_TO_POLL_BOTH: u8 = NEED_TO_POLL_FUTURES | NEED_TO_POLL_STREAM;
 
 /// Indicates that current stream is polled at the moment.
 const POLLING: u8 = 0b100;
@@ -63,7 +63,7 @@ impl SharedPollState {
     /// with non-`POLLING` state, and returns disjunction result.
     fn end_polling(&self, mut to_poll: u8) -> u8 {
         to_poll |= self.state.swap(!POLLING & !WOKEN, Ordering::SeqCst);
-        self.state.fetch_and(to_poll & !POLLING & !WOKEN, Ordering::SeqCst);
+        self.state.swap(to_poll & !POLLING & !WOKEN, Ordering::SeqCst);
         to_poll
     }
 }
@@ -101,8 +101,8 @@ impl ArcWake for PollWaker {
         // Only call waker if stream isn't being polled because it will be called
         // at the end of polling if state was changed.
         if poll_state_value & (POLLING | WOKEN) == NONE {
-            self_arc.poll_state.set_or(WOKEN);
             if let Some(Some(inner_waker)) = unsafe { self_arc.inner_waker.get().as_ref() } {
+                self_arc.poll_state.set_or(WOKEN);
                 inner_waker.wake_by_ref();
             }
         }
@@ -248,7 +248,12 @@ where
         let mut this = self.project();
 
         let mut poll_state_value = this.poll_state.begin_polling();
-        let mut polling_with_two_wakers = poll_state_value & NEED_TO_POLL == NEED_TO_POLL && !stream_will_be_woken;
+
+        if poll_state_value & NEED_TO_POLL_BOTH == NONE {
+            poll_state_value = NEED_TO_POLL_STREAM | if this.futures.is_empty() { NONE } else { NEED_TO_POLL_FUTURES };
+        }
+
+        let mut polling_with_two_wakers = poll_state_value & NEED_TO_POLL_BOTH == NEED_TO_POLL_BOTH && !stream_will_be_woken;
 
         if poll_state_value & NEED_TO_POLL_STREAM != NONE {
             if !stream_will_be_woken {
@@ -323,7 +328,7 @@ where
 
         let is_done = *this.is_stream_done && this.futures.is_empty();
 
-        if !is_done && poll_state_value & WOKEN == NONE && poll_state_value & NEED_TO_POLL != NONE
+        if !is_done && poll_state_value & WOKEN == NONE && poll_state_value & NEED_TO_POLL_BOTH != NONE
             && (polling_with_two_wakers
                 || poll_state_value & NEED_TO_POLL_FUTURES != NONE && !futures_will_be_woken
                     || poll_state_value & NEED_TO_POLL_STREAM != NONE && !stream_will_be_woken)
@@ -331,10 +336,10 @@ where
             ctx.waker().wake_by_ref();
         }
 
-        if next_item.is_none() && !is_done {
-            Poll::Pending
-        } else {
+        if next_item.is_some() || is_done {
             Poll::Ready(next_item)
+        } else {
+            Poll::Pending
         }
     }
 }

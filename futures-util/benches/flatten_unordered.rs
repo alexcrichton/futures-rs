@@ -12,9 +12,9 @@ use std::collections::VecDeque;
 use std::thread;
 
 #[bench]
-fn inner_oneshots(b: &mut Bencher) {
-    const STREAM_COUNT: usize = 1_000;
-    const STREAM_ITEM_COUNT: usize = 10;
+fn oneshot_streams(b: &mut Bencher) {
+    const STREAM_COUNT: usize = 10_000;
+    const STREAM_ITEM_COUNT: usize = 1;
 
     b.iter(|| {
         let mut txs = VecDeque::with_capacity(STREAM_COUNT);
@@ -27,10 +27,10 @@ fn inner_oneshots(b: &mut Bencher) {
         }
 
         thread::spawn(move || {
-            let mut m = 1;
+            let mut last = 1;
             while let Some(tx) = txs.pop_front() {
-                let _ = tx.send(stream::iter(m..m + STREAM_ITEM_COUNT));
-                m += STREAM_ITEM_COUNT;
+                let _ = tx.send(stream::iter(last..last + STREAM_ITEM_COUNT));
+                last += STREAM_ITEM_COUNT;
             }
         });
 
@@ -52,11 +52,14 @@ fn inner_oneshots(b: &mut Bencher) {
             loop {
                 match flatten.poll_next_unpin(cx) {
                     Poll::Ready(None) => break,
-                    Poll::Ready(Some(_)) => count += 1,
+                    Poll::Ready(Some(_)) => {
+                        count += 1;
+                    }
                     _ => {}
                 }
             }
             assert_eq!(count, STREAM_COUNT * STREAM_ITEM_COUNT);
+
             Poll::Ready(())
         }))
     });
