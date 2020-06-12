@@ -3,7 +3,7 @@ use futures_core::stream::{FusedStream, Stream, TryStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`try_flatten`](super::TryStreamExt::try_flatten) method.
 #[pin_project]
@@ -51,19 +51,18 @@ where
 {
     type Item = Result<<St::Ok as TryStream>::Ok, <St::Ok as TryStream>::Error>;
 
-    #[project]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        #[project]
-        let TryFlatten { mut stream, mut next } = self.project();
+        let mut this = self.project();
+
         Poll::Ready(loop {
-            if let Some(s) = next.as_mut().as_pin_mut() {
+            if let Some(s) = this.next.as_mut().as_pin_mut() {
                 if let Some(item) = ready!(s.try_poll_next(cx)?) {
                     break Some(Ok(item));
                 } else {
-                    next.set(None);
+                    this.next.set(None);
                 }
-            } else if let Some(s) = ready!(stream.as_mut().try_poll_next(cx)?) {
-                next.set(Some(s));
+            } else if let Some(s) = ready!(this.stream.as_mut().try_poll_next(cx)?) {
+                this.next.set(Some(s));
             } else {
                 break None;
             }

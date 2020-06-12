@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::TryFuture;
 use futures_core::stream::Stream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Creates a `TryStream` from a seed and a closure returning a `TryFuture`.
 ///
@@ -96,30 +96,28 @@ where
 {
     type Item = Result<Item, Fut::Error>;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Item, Fut::Error>>> {
-        #[project]
-        let TryUnfold {f, state, mut fut } = self.project();
+    ) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        if let Some(state) = state.take() {
-            fut.set(Some(f(state)));
+        if let Some(state) = this.state.take() {
+            this.fut.set(Some((this.f)(state)));
         }
 
-        match fut.as_mut().as_pin_mut() {
+        match this.fut.as_mut().as_pin_mut() {
             None => {
                 // The future previously errored
                 Poll::Ready(None)
             }
             Some(future) => {
                 let step = ready!(future.try_poll(cx));
-                fut.set(None);
+                this.fut.set(None);
 
                 match step {
                     Ok(Some((item, next_state))) => {
-                        *state = Some(next_state);
+                        *this.state = Some(next_state);
                         Poll::Ready(Some(Ok(item)))
                     }
                     Ok(None) => Poll::Ready(None),

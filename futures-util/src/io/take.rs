@@ -2,7 +2,7 @@ use futures_core::task::{Context, Poll};
 #[cfg(feature = "read-initializer")]
 use futures_io::Initializer;
 use futures_io::{AsyncRead, AsyncBufRead};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use std::{cmp, io};
 use std::pin::Pin;
 
@@ -83,22 +83,20 @@ impl<R: AsyncRead> Take<R> {
 }
 
 impl<R: AsyncRead> AsyncRead for Take<R> {
-    #[project]
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, io::Error>> {
-        #[project]
-        let Take { inner, limit_ } = self.project();
+        let this = self.project();
 
-        if *limit_ == 0 {
+        if *this.limit_ == 0 {
             return Poll::Ready(Ok(0));
         }
 
-        let max = std::cmp::min(buf.len() as u64, *limit_) as usize;
-        let n = ready!(inner.poll_read(cx, &mut buf[..max]))?;
-        *limit_ -= n as u64;
+        let max = cmp::min(buf.len() as u64, *this.limit_) as usize;
+        let n = ready!(this.inner.poll_read(cx, &mut buf[..max]))?;
+        *this.limit_ -= n as u64;
         Poll::Ready(Ok(n))
     }
 
@@ -109,29 +107,25 @@ impl<R: AsyncRead> AsyncRead for Take<R> {
 }
 
 impl<R: AsyncBufRead> AsyncBufRead for Take<R> {
-    #[project]
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
-        #[project]
-        let Take { inner, limit_ } = self.project();
+        let this = self.project();
 
         // Don't call into inner reader at all at EOF because it may still block
-        if *limit_ == 0 {
+        if *this.limit_ == 0 {
             return Poll::Ready(Ok(&[]));
         }
 
-        let buf = ready!(inner.poll_fill_buf(cx)?);
-        let cap = cmp::min(buf.len() as u64, *limit_) as usize;
+        let buf = ready!(this.inner.poll_fill_buf(cx)?);
+        let cap = cmp::min(buf.len() as u64, *this.limit_) as usize;
         Poll::Ready(Ok(&buf[..cap]))
     }
 
-    #[project]
     fn consume(self: Pin<&mut Self>, amt: usize) {
-        #[project]
-        let Take { inner, limit_ } = self.project();
+        let this = self.project();
 
         // Don't let callers reset the limit by passing an overlarge value
-        let amt = cmp::min(amt as u64, *limit_) as usize;
-        *limit_ -= amt as u64;
-        inner.consume(amt);
+        let amt = cmp::min(amt as u64, *this.limit_) as usize;
+        *this.limit_ -= amt as u64;
+        this.inner.consume(amt);
     }
 }

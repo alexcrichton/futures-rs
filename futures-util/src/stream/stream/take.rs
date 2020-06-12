@@ -4,7 +4,7 @@ use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`take`](super::StreamExt::take) method.
 #[pin_project]
@@ -32,7 +32,6 @@ impl<St> Stream for Take<St>
 {
     type Item = St::Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -40,13 +39,12 @@ impl<St> Stream for Take<St>
         if self.remaining == 0 {
             Poll::Ready(None)
         } else {
-            #[project]
-            let Take { stream, remaining } = self.project();
-            let next = ready!(stream.poll_next(cx));
+            let this = self.project();
+            let next = ready!(this.stream.poll_next(cx));
             if next.is_some() {
-                *remaining -= 1;
+                *this.remaining -= 1;
             } else {
-                *remaining = 0;
+                *this.remaining = 0;
             }
             Poll::Ready(next)
         }

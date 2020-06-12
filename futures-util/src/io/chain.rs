@@ -2,7 +2,7 @@ use futures_core::task::{Context, Poll};
 #[cfg(feature = "read-initializer")]
 use futures_io::Initializer;
 use futures_io::{AsyncBufRead, AsyncRead, IoSliceMut};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use std::fmt;
 use std::io;
 use std::pin::Pin;
@@ -80,42 +80,38 @@ where
     T: AsyncRead,
     U: AsyncRead,
 {
-    #[project]
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        #[project]
-        let Chain { first, second, done_first } = self.project();
+        let this = self.project();
 
-        if !*done_first {
-            match ready!(first.poll_read(cx, buf)?) {
-                0 if !buf.is_empty() => *done_first = true,
+        if !*this.done_first {
+            match ready!(this.first.poll_read(cx, buf)?) {
+                0 if !buf.is_empty() => *this.done_first = true,
                 n => return Poll::Ready(Ok(n)),
             }
         }
-        second.poll_read(cx, buf)
+        this.second.poll_read(cx, buf)
     }
 
-    #[project]
     fn poll_read_vectored(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         bufs: &mut [IoSliceMut<'_>],
     ) -> Poll<io::Result<usize>> {
-        #[project]
-        let Chain { first, second, done_first } = self.project();
+        let this = self.project();
 
-        if !*done_first {
-            let n = ready!(first.poll_read_vectored(cx, bufs)?);
+        if !*this.done_first {
+            let n = ready!(this.first.poll_read_vectored(cx, bufs)?);
             if n == 0 && bufs.iter().any(|b| !b.is_empty()) {
-                *done_first = true
+                *this.done_first = true
             } else {
                 return Poll::Ready(Ok(n));
             }
         }
-        second.poll_read_vectored(cx, bufs)
+        this.second.poll_read_vectored(cx, bufs)
     }
 
     #[cfg(feature = "read-initializer")]
@@ -134,31 +130,27 @@ where
     T: AsyncBufRead,
     U: AsyncBufRead,
 {
-    #[project]
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
-        #[project]
-        let Chain { first, second, done_first } = self.project();
+        let this = self.project();
 
-        if !*done_first {
-            match ready!(first.poll_fill_buf(cx)?) {
+        if !*this.done_first {
+            match ready!(this.first.poll_fill_buf(cx)?) {
                 buf if buf.is_empty() => {
-                    *done_first = true;
+                    *this.done_first = true;
                 }
                 buf => return Poll::Ready(Ok(buf)),
             }
         }
-        second.poll_fill_buf(cx)
+        this.second.poll_fill_buf(cx)
     }
 
-    #[project]
     fn consume(self: Pin<&mut Self>, amt: usize) {
-        #[project]
-        let Chain { first, second, done_first } = self.project();
+        let this = self.project();
 
-        if !*done_first {
-            first.consume(amt)
+        if !*this.done_first {
+            this.first.consume(amt)
         } else {
-            second.consume(amt)
+            this.second.consume(amt)
         }
     }
 }

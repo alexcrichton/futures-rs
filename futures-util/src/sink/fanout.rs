@@ -2,7 +2,7 @@ use core::fmt::{Debug, Formatter, Result as FmtResult};
 use core::pin::Pin;
 use futures_core::task::{Context, Poll};
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Sink that clones incoming items and forwards them to two sinks at the same time.
 ///
@@ -63,57 +63,49 @@ impl<Si1, Si2, Item> Sink<Item> for Fanout<Si1, Si2>
 {
     type Error = Si1::Error;
 
-    #[project]
     fn poll_ready(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        #[project]
-        let Fanout { sink1, sink2 } = self.project();
+        let this = self.project();
 
-        let sink1_ready = sink1.poll_ready(cx)?.is_ready();
-        let sink2_ready = sink2.poll_ready(cx)?.is_ready();
+        let sink1_ready = this.sink1.poll_ready(cx)?.is_ready();
+        let sink2_ready = this.sink2.poll_ready(cx)?.is_ready();
         let ready = sink1_ready && sink2_ready;
         if ready { Poll::Ready(Ok(())) } else { Poll::Pending }
     }
 
-    #[project]
     fn start_send(
         self: Pin<&mut Self>,
         item: Item,
     ) -> Result<(), Self::Error> {
-        #[project]
-        let Fanout { sink1, sink2 } = self.project();
+        let this = self.project();
 
-        sink1.start_send(item.clone())?;
-        sink2.start_send(item)?;
+        this.sink1.start_send(item.clone())?;
+        this.sink2.start_send(item)?;
         Ok(())
     }
 
-    #[project]
     fn poll_flush(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        #[project]
-        let Fanout { sink1, sink2 } = self.project();
+        let this = self.project();
 
-        let sink1_ready = sink1.poll_flush(cx)?.is_ready();
-        let sink2_ready = sink2.poll_flush(cx)?.is_ready();
+        let sink1_ready = this.sink1.poll_flush(cx)?.is_ready();
+        let sink2_ready = this.sink2.poll_flush(cx)?.is_ready();
         let ready = sink1_ready && sink2_ready;
         if ready { Poll::Ready(Ok(())) } else { Poll::Pending }
     }
 
-    #[project]
     fn poll_close(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        #[project]
-        let Fanout { sink1, sink2 } = self.project();
+        let this = self.project();
 
-        let sink1_ready = sink1.poll_close(cx)?.is_ready();
-        let sink2_ready = sink2.poll_close(cx)?.is_ready();
+        let sink1_ready = this.sink1.poll_close(cx)?.is_ready();
+        let sink2_ready = this.sink2.poll_close(cx)?.is_ready();
         let ready = sink1_ready && sink2_ready;
         if ready { Poll::Ready(Ok(())) } else { Poll::Pending }
     }

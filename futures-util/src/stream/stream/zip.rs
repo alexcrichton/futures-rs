@@ -3,7 +3,7 @@ use core::cmp;
 use core::pin::Pin;
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`zip`](super::StreamExt::zip) method.
 #[pin_project]
@@ -75,31 +75,29 @@ impl<St1, St2> Stream for Zip<St1, St2>
 {
     type Item = (St1::Item, St2::Item);
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Zip { mut stream1, mut stream2, queued1, queued2 } = self.project();
+        let mut this = self.project();
 
-        if queued1.is_none() {
-            match stream1.as_mut().poll_next(cx) {
-                Poll::Ready(Some(item1)) => *queued1 = Some(item1),
+        if this.queued1.is_none() {
+            match this.stream1.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item1)) => *this.queued1 = Some(item1),
                 Poll::Ready(None) | Poll::Pending => {}
             }
         }
-        if queued2.is_none() {
-            match stream2.as_mut().poll_next(cx) {
-                Poll::Ready(Some(item2)) => *queued2 = Some(item2),
+        if this.queued2.is_none() {
+            match this.stream2.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item2)) => *this.queued2 = Some(item2),
                 Poll::Ready(None) | Poll::Pending => {}
             }
         }
 
-        if queued1.is_some() && queued2.is_some() {
-            let pair = (queued1.take().unwrap(), queued2.take().unwrap());
+        if this.queued1.is_some() && this.queued2.is_some() {
+            let pair = (this.queued1.take().unwrap(), this.queued2.take().unwrap());
             Poll::Ready(Some(pair))
-        } else if stream1.is_done() || stream2.is_done() {
+        } else if this.stream1.is_done() || this.stream2.is_done() {
             Poll::Ready(None)
         } else {
             Poll::Pending

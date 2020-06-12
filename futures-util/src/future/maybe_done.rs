@@ -3,12 +3,12 @@
 use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project, project_replace};
+use pin_project::pin_project;
 
 /// A future that may have completed.
 ///
 /// This is created by the [`maybe_done()`] function.
-#[pin_project(Replace)]
+#[pin_project(project = MaybeDoneProj, project_replace = MaybeDoneProjOwn)]
 #[derive(Debug)]
 pub enum MaybeDone<Fut: Future> {
     /// A not-yet-completed future
@@ -46,29 +46,25 @@ impl<Fut: Future> MaybeDone<Fut> {
     /// The output of this method will be [`Some`] if and only if the inner
     /// future has been completed and [`take_output`](MaybeDone::take_output)
     /// has not yet been called.
-    #[project]
     #[inline]
     pub fn output_mut(self: Pin<&mut Self>) -> Option<&mut Fut::Output> {
-        #[project]
         match self.project() {
-            MaybeDone::Done(res) => Some(res),
+            MaybeDoneProj::Done(res) => Some(res),
             _ => None,
         }
     }
 
     /// Attempt to take the output of a `MaybeDone` without driving it
     /// towards completion.
-    #[project_replace]
     #[inline]
     pub fn take_output(self: Pin<&mut Self>) -> Option<Fut::Output> {
         match &*self {
-            MaybeDone::Done(_) => {},
+            MaybeDone::Done(_) => {}
             MaybeDone::Future(_) | MaybeDone::Gone => return None,
         }
-        #[project_replace]
         match self.project_replace(MaybeDone::Gone) {
-            MaybeDone::Done(output) => Some(output),
-            _ => unreachable!()
+            MaybeDoneProjOwn::Done(output) => Some(output),
+            _ => unreachable!(),
         }
     }
 }
@@ -85,16 +81,14 @@ impl<Fut: Future> FusedFuture for MaybeDone<Fut> {
 impl<Fut: Future> Future for MaybeDone<Fut> {
     type Output = ();
 
-    #[project]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[project]
         match self.as_mut().project() {
-            MaybeDone::Future(f) => {
+            MaybeDoneProj::Future(f) => {
                 let res = ready!(f.poll(cx));
                 self.set(MaybeDone::Done(res));
-            },
-            MaybeDone::Done(_) => {},
-            MaybeDone::Gone => panic!("MaybeDone polled after value taken"),
+            }
+            MaybeDoneProj::Done(_) => {}
+            MaybeDoneProj::Gone => panic!("MaybeDone polled after value taken"),
         }
         Poll::Ready(())
     }

@@ -6,7 +6,7 @@ use core::num::NonZeroUsize;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::stream::TryStream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the
 /// [`try_for_each_concurrent`](super::TryStreamExt::try_for_each_concurrent)
@@ -68,16 +68,14 @@ impl<St, Fut, F> Future for TryForEachConcurrent<St, Fut, F>
 {
     type Output = Result<(), St::Error>;
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[project]
-        let TryForEachConcurrent { mut stream, f, futures, limit } = self.project();
+        let mut this = self.project();
         loop {
             let mut made_progress_this_iter = false;
 
             // Check if we've already created a number of futures greater than `limit`
-            if limit.map(|limit| limit.get() > futures.len()).unwrap_or(true) {
-                let poll_res = match stream.as_mut().as_pin_mut() {
+            if this.limit.map(|limit| limit.get() > this.futures.len()).unwrap_or(true) {
+                let poll_res = match this.stream.as_mut().as_pin_mut() {
                     Some(stream) => stream.try_poll_next(cx),
                     None => Poll::Ready(None),
                 };
@@ -88,28 +86,28 @@ impl<St, Fut, F> Future for TryForEachConcurrent<St, Fut, F>
                         Some(elem)
                     },
                     Poll::Ready(None) => {
-                        stream.set(None);
+                        this.stream.set(None);
                         None
                     }
                     Poll::Pending => None,
                     Poll::Ready(Some(Err(e))) => {
                         // Empty the stream and futures so that we know
                         // the future has completed.
-                        stream.set(None);
-                        drop(mem::replace(futures, FuturesUnordered::new()));
+                        this.stream.set(None);
+                        drop(mem::replace(this.futures, FuturesUnordered::new()));
                         return Poll::Ready(Err(e));
                     }
                 };
 
                 if let Some(elem) = elem {
-                    futures.push(f(elem));
+                    this.futures.push((this.f)(elem));
                 }
             }
 
-            match futures.poll_next_unpin(cx) {
+            match this.futures.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok(()))) => made_progress_this_iter = true,
                 Poll::Ready(None) => {
-                    if stream.is_none() {
+                    if this.stream.is_none() {
                         return Poll::Ready(Ok(()))
                     }
                 },
@@ -117,8 +115,8 @@ impl<St, Fut, F> Future for TryForEachConcurrent<St, Fut, F>
                 Poll::Ready(Some(Err(e))) => {
                     // Empty the stream and futures so that we know
                     // the future has completed.
-                    stream.set(None);
-                    drop(mem::replace(futures, FuturesUnordered::new()));
+                    this.stream.set(None);
+                    drop(mem::replace(this.futures, FuturesUnordered::new()));
                     return Poll::Ready(Err(e));
                 }
             }

@@ -1,6 +1,6 @@
 use futures_core::task::{Context, Poll};
 use futures_io::{AsyncBufRead, AsyncRead, AsyncSeek, AsyncWrite, IoSlice, SeekFrom};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use std::fmt;
 use std::io::{self, Write};
 use std::pin::Pin;
@@ -51,15 +51,13 @@ impl<W: AsyncWrite> BufWriter<W> {
         }
     }
 
-    #[project]
     fn flush_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        #[project]
-        let BufWriter { mut inner, buf, written } = self.project();
+        let mut this = self.project();
 
-        let len = buf.len();
+        let len = this.buf.len();
         let mut ret = Ok(());
-        while *written < len {
-            match ready!(inner.as_mut().poll_write(cx, &buf[*written..])) {
+        while *this.written < len {
+            match ready!(this.inner.as_mut().poll_write(cx, &this.buf[*this.written..])) {
                 Ok(0) => {
                     ret = Err(io::Error::new(
                         io::ErrorKind::WriteZero,
@@ -67,17 +65,17 @@ impl<W: AsyncWrite> BufWriter<W> {
                     ));
                     break;
                 }
-                Ok(n) => *written += n,
+                Ok(n) => *this.written += n,
                 Err(e) => {
                     ret = Err(e);
                     break;
                 }
             }
         }
-        if *written > 0 {
-            buf.drain(..*written);
+        if *this.written > 0 {
+            this.buf.drain(..*this.written);
         }
-        *written = 0;
+        *this.written = 0;
         Poll::Ready(ret)
     }
 

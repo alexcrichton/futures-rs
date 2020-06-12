@@ -1,7 +1,7 @@
 use core::pin::Pin;
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`chain`](super::StreamExt::chain) method.
 #[pin_project]
@@ -42,20 +42,18 @@ where St1: Stream,
 {
     type Item = St1::Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Chain { mut first, second } = self.project();
-        if let Some(first) = first.as_mut().as_pin_mut() {
+        let mut this = self.project();
+        if let Some(first) = this.first.as_mut().as_pin_mut() {
             if let Some(item) = ready!(first.poll_next(cx)) {
                 return Poll::Ready(Some(item))
             }
         }
-        first.set(None);
-        second.poll_next(cx)
+        this.first.set(None);
+        this.second.poll_next(cx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

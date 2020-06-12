@@ -4,7 +4,7 @@ use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 use crate::fns::FnMut1;
 
@@ -51,15 +51,13 @@ impl<St, F> Stream for Map<St, F>
 {
     type Item = F::Output;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Map { stream, f } = self.project();
-        let res = ready!(stream.poll_next(cx));
-        Poll::Ready(res.map(|x| f.call_mut(x)))
+        let mut this = self.project();
+        let res = ready!(this.stream.as_mut().poll_next(cx));
+        Poll::Ready(res.map(|x| this.f.call_mut(x)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

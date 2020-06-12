@@ -3,7 +3,7 @@ use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use core::mem;
 use core::pin::Pin;
 use alloc::vec::Vec;
@@ -41,21 +41,19 @@ impl<St: Stream> Chunks<St> where St: Stream {
 impl<St: Stream> Stream for Chunks<St> {
     type Item = Vec<St::Item>;
 
-    #[project]
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Chunks { mut stream, items, cap } = self.as_mut().project();
+        let mut this = self.as_mut().project();
         loop {
-            match ready!(stream.as_mut().poll_next(cx)) {
+            match ready!(this.stream.as_mut().poll_next(cx)) {
                 // Push the item into the buffer and check whether it is full.
                 // If so, replace our buffer with a new and empty one and return
                 // the full one.
                 Some(item) => {
-                    items.push(item);
-                    if items.len() >= *cap {
+                    this.items.push(item);
+                    if this.items.len() >= *this.cap {
                         return Poll::Ready(Some(self.take()))
                     }
                 }
@@ -63,10 +61,10 @@ impl<St: Stream> Stream for Chunks<St> {
                 // Since the underlying stream ran out of values, return what we
                 // have buffered, if we have anything.
                 None => {
-                    let last = if items.is_empty() {
+                    let last = if this.items.is_empty() {
                         None
                     } else {
-                        let full_buf = mem::replace(items, Vec::new());
+                        let full_buf = mem::replace(this.items, Vec::new());
                         Some(full_buf)
                     };
 

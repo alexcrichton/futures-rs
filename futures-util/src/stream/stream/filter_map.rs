@@ -5,7 +5,7 @@ use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use crate::fns::FnMut1;
 
 /// Stream for the [`filter_map`](super::StreamExt::filter_map) method.
@@ -61,24 +61,22 @@ impl<St, Fut, F, T> Stream for FilterMap<St, Fut, F>
 {
     type Item = T;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<T>> {
-        #[project]
-        let FilterMap { mut stream, f, mut pending } = self.project();
+        let mut this = self.project();
         Poll::Ready(loop {
-            if let Some(p) = pending.as_mut().as_pin_mut() {
+            if let Some(p) = this.pending.as_mut().as_pin_mut() {
                 // We have an item in progress, poll that until it's done
                 let item = ready!(p.poll(cx));
-                pending.set(None);
+                this.pending.set(None);
                 if item.is_some() {
                     break item;
                 }
-            } else if let Some(item) = ready!(stream.as_mut().poll_next(cx)) {
+            } else if let Some(item) = ready!(this.stream.as_mut().poll_next(cx)) {
                 // No item in progress, but the stream is still going
-                pending.set(Some(f.call_mut(item)));
+                this.pending.set(Some(this.f.call_mut(item)));
             } else {
                 // The stream is done
                 break None;

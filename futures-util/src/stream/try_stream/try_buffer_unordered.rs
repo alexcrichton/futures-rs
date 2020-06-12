@@ -5,7 +5,7 @@ use futures_core::stream::{Stream, TryStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use core::pin::Pin;
 
 /// Stream for the
@@ -43,31 +43,29 @@ impl<St> Stream for TryBufferUnordered<St>
 {
     type Item = Result<<St::Ok as TryFuture>::Ok, St::Error>;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let TryBufferUnordered { mut stream, in_progress_queue, max } = self.project();
+        let mut this = self.project();
 
         // First up, try to spawn off as many futures as possible by filling up
         // our queue of futures. Propagate errors from the stream immediately.
-        while in_progress_queue.len() < *max {
-            match stream.as_mut().poll_next(cx)? {
-                Poll::Ready(Some(fut)) => in_progress_queue.push(fut.into_future()),
+        while this.in_progress_queue.len() < *this.max {
+            match this.stream.as_mut().poll_next(cx)? {
+                Poll::Ready(Some(fut)) => this.in_progress_queue.push(fut.into_future()),
                 Poll::Ready(None) | Poll::Pending => break,
             }
         }
 
         // Attempt to pull the next value from the in_progress_queue
-        match in_progress_queue.poll_next_unpin(cx) {
+        match this.in_progress_queue.poll_next_unpin(cx) {
             x @ Poll::Pending | x @ Poll::Ready(Some(_)) => return x,
             Poll::Ready(None) => {}
         }
 
         // If more values are still coming from the stream, we're not done yet
-        if stream.is_done() {
+        if this.stream.is_done() {
             Poll::Ready(None)
         } else {
             Poll::Pending

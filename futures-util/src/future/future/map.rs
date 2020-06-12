@@ -1,12 +1,12 @@
 use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 use crate::fns::FnOnce1;
 
 /// Internal Map future
-#[pin_project(Replace)]
+#[pin_project(project = MapProj, project_replace = MapProjOwn)]
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub enum Map<Fut, F> {
@@ -43,19 +43,16 @@ impl<Fut, F, T> Future for Map<Fut, F>
 {
     type Output = T;
 
-    #[project]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        #[project]
         match self.as_mut().project() {
-            Map::Incomplete { future, .. } => {
+            MapProj::Incomplete { future, .. } => {
                 let output = ready!(future.poll(cx));
-                #[project_replace]
                 match self.project_replace(Map::Complete) {
-                    Map::Incomplete { f, .. } => Poll::Ready(f.call_once(output)),
-                    Map::Complete => unreachable!(),
+                    MapProjOwn::Incomplete { f, .. } => Poll::Ready(f.call_once(output)),
+                    MapProjOwn::Complete => unreachable!(),
                 }
             },
-            Map::Complete => panic!("Map must not be polled after it returned `Poll::Ready`"),
+            MapProj::Complete => panic!("Map must not be polled after it returned `Poll::Ready`"),
         }
     }
 }

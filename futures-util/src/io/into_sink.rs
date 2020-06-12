@@ -3,7 +3,7 @@ use futures_io::AsyncWrite;
 use futures_sink::Sink;
 use std::io;
 use std::pin::Pin;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 #[derive(Debug)]
 struct Block<Item> {
@@ -30,26 +30,24 @@ impl<W: AsyncWrite, Item: AsRef<[u8]>> IntoSink<W, Item> {
 
     /// If we have an outstanding block in `buffer` attempt to push it into the writer, does _not_
     /// flush the writer after it succeeds in pushing the block into it.
-    #[project]
     fn poll_flush_buffer(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>>
     {
-        #[project]
-        let IntoSink { mut writer, buffer } = self.project();
+        let mut this = self.project();
 
-        if let Some(buffer) = buffer {
+        if let Some(buffer) = this.buffer {
             loop {
                 let bytes = buffer.bytes.as_ref();
-                let written = ready!(writer.as_mut().poll_write(cx, &bytes[buffer.offset..]))?;
+                let written = ready!(this.writer.as_mut().poll_write(cx, &bytes[buffer.offset..]))?;
                 buffer.offset += written;
                 if buffer.offset == bytes.len() {
                     break;
                 }
             }
         }
-        *buffer = None;
+        *this.buffer = None;
         Poll::Ready(Ok(()))
     }
 

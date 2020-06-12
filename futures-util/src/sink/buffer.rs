@@ -1,7 +1,7 @@
 use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use core::pin::Pin;
 use alloc::collections::VecDeque;
 
@@ -29,18 +29,16 @@ impl<Si: Sink<Item>, Item> Buffer<Si, Item> {
 
     delegate_access_inner!(sink, Si, ());
 
-    #[project]
     fn try_empty_buffer(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Si::Error>> {
-        #[project]
-        let Buffer { mut sink, buf, .. } = self.project();
-        ready!(sink.as_mut().poll_ready(cx))?;
-        while let Some(item) = buf.pop_front() {
-            sink.as_mut().start_send(item)?;
-            if !buf.is_empty() {
-                ready!(sink.as_mut().poll_ready(cx))?;
+        let mut this = self.project();
+        ready!(this.sink.as_mut().poll_ready(cx))?;
+        while let Some(item) = this.buf.pop_front() {
+            this.sink.as_mut().start_send(item)?;
+            if !this.buf.is_empty() {
+                ready!(this.sink.as_mut().poll_ready(cx))?;
             }
         }
         Poll::Ready(Ok(()))

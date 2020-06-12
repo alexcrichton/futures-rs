@@ -5,7 +5,7 @@ use core::num::NonZeroUsize;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::stream::Stream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`for_each_concurrent`](super::StreamExt::for_each_concurrent)
 /// method.
@@ -66,17 +66,15 @@ impl<St, Fut, F> Future for ForEachConcurrent<St, Fut, F>
 {
     type Output = ();
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        #[project]
-        let ForEachConcurrent { mut stream, f, futures, limit } = self.project();
+        let mut this = self.project();
         loop {
             let mut made_progress_this_iter = false;
 
             // Check if we've already created a number of futures greater than `limit`
-            if limit.map(|limit| limit.get() > futures.len()).unwrap_or(true) {
+            if this.limit.map(|limit| limit.get() > this.futures.len()).unwrap_or(true) {
                 let mut stream_completed = false;
-                let elem = if let Some(stream) = stream.as_mut().as_pin_mut() {
+                let elem = if let Some(stream) = this.stream.as_mut().as_pin_mut() {
                     match stream.poll_next(cx) {
                         Poll::Ready(Some(elem)) => {
                             made_progress_this_iter = true;
@@ -92,17 +90,17 @@ impl<St, Fut, F> Future for ForEachConcurrent<St, Fut, F>
                     None
                 };
                 if stream_completed {
-                    stream.set(None);
+                    this.stream.set(None);
                 }
                 if let Some(elem) = elem {
-                    futures.push(f(elem));
+                    this.futures.push((this.f)(elem));
                 }
             }
 
-            match futures.poll_next_unpin(cx) {
+            match this.futures.poll_next_unpin(cx) {
                 Poll::Ready(Some(())) => made_progress_this_iter = true,
                 Poll::Ready(None) => {
-                    if stream.is_none() {
+                    if this.stream.is_none() {
                         return Poll::Ready(())
                     }
                 },

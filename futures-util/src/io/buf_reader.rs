@@ -2,7 +2,7 @@ use futures_core::task::{Context, Poll};
 #[cfg(feature = "read-initializer")]
 use futures_io::Initializer;
 use futures_io::{AsyncBufRead, AsyncRead, AsyncSeek, AsyncWrite, IoSliceMut, SeekFrom};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use std::io::{self, Read};
 use std::pin::Pin;
 use std::{cmp, fmt};
@@ -68,13 +68,11 @@ impl<R: AsyncRead> BufReader<R> {
     }
 
     /// Invalidates all data in the internal buffer.
-    #[project]
     #[inline]
     fn discard_buffer(self: Pin<&mut Self>) {
-        #[project]
-        let BufReader { pos, cap, .. } = self.project();
-        *pos = 0;
-        *cap = 0;
+        let this = self.project();
+        *this.pos = 0;
+        *this.cap = 0;
     }
 }
 
@@ -123,24 +121,22 @@ impl<R: AsyncRead> AsyncRead for BufReader<R> {
 }
 
 impl<R: AsyncRead> AsyncBufRead for BufReader<R> {
-    #[project]
     fn poll_fill_buf(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<&[u8]>> {
-        #[project]
-        let BufReader { inner, buffer, cap, pos } = self.project();
+        let this = self.project();
 
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
         // Branch using `>=` instead of the more correct `==`
         // to tell the compiler that the pos..cap slice is always valid.
-        if *pos >= *cap {
-            debug_assert!(*pos == *cap);
-            *cap = ready!(inner.poll_read(cx, buffer))?;
-            *pos = 0;
+        if *this.pos >= *this.cap {
+            debug_assert!(*this.pos == *this.cap);
+            *this.cap = ready!(this.inner.poll_read(cx, this.buffer))?;
+            *this.pos = 0;
         }
-        Poll::Ready(Ok(&buffer[*pos..*cap]))
+        Poll::Ready(Ok(&this.buffer[*this.pos..*this.cap]))
     }
 
     fn consume(self: Pin<&mut Self>, amt: usize) {

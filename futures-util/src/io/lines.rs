@@ -5,7 +5,7 @@ use std::io;
 use std::mem;
 use std::pin::Pin;
 use super::read_line::read_line_internal;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`lines`](super::AsyncBufReadExt::lines) method.
 
@@ -34,20 +34,18 @@ impl<R: AsyncBufRead> Lines<R> {
 impl<R: AsyncBufRead> Stream for Lines<R> {
     type Item = io::Result<String>;
 
-    #[project]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Lines { reader, buf, bytes, read } = self.project();
-        let n = ready!(read_line_internal(reader, cx, buf, bytes, read))?;
-        if n == 0 && buf.is_empty() {
+        let this = self.project();
+        let n = ready!(read_line_internal(this.reader, cx, this.buf, this.bytes, this.read))?;
+        if n == 0 && this.buf.is_empty() {
             return Poll::Ready(None)
         }
-        if buf.ends_with('\n') {
-            buf.pop();
-            if buf.ends_with('\r') {
-                buf.pop();
+        if this.buf.ends_with('\n') {
+            this.buf.pop();
+            if this.buf.ends_with('\r') {
+                this.buf.pop();
             }
         }
-        Poll::Ready(Some(Ok(mem::replace(buf, String::new()))))
+        Poll::Ready(Some(Ok(mem::replace(this.buf, String::new()))))
     }
 }

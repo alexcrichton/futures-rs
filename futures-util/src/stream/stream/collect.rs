@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`collect`](super::StreamExt::collect) method.
 #[pin_project]
@@ -43,13 +43,11 @@ where St: Stream,
 {
     type Output = C;
 
-    #[project]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<C> {
-        #[project]
-        let Collect { mut stream, collection } = self.as_mut().project();
+        let mut this = self.as_mut().project();
         loop {
-            match ready!(stream.as_mut().poll_next(cx)) {
-                Some(e) => collection.extend(Some(e)),
+            match ready!(this.stream.as_mut().poll_next(cx)) {
+                Some(e) => this.collection.extend(Some(e)),
                 None => return Poll::Ready(self.finish()),
             }
         }

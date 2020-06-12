@@ -5,7 +5,7 @@ use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`take_while`](super::StreamExt::take_while) method.
 #[pin_project]
@@ -61,7 +61,6 @@ impl<St, Fut, F> Stream for TakeWhile<St, Fut, F>
 {
     type Item = St::Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -70,23 +69,22 @@ impl<St, Fut, F> Stream for TakeWhile<St, Fut, F>
             return Poll::Ready(None);
         }
 
-        #[project]
-        let TakeWhile { mut stream, f, mut pending_fut, pending_item, done_taking } = self.project();
+        let mut this = self.project();
 
         Poll::Ready(loop {
-            if let Some(fut) = pending_fut.as_mut().as_pin_mut() {
+            if let Some(fut) = this.pending_fut.as_mut().as_pin_mut() {
                 let take = ready!(fut.poll(cx));
-                let item = pending_item.take();
-                pending_fut.set(None);
+                let item = this.pending_item.take();
+                this.pending_fut.set(None);
                 if take {
                     break item;
                 } else {
-                    *done_taking = true;
+                    *this.done_taking = true;
                     break None;
                 }
-            } else if let Some(item) = ready!(stream.as_mut().poll_next(cx)) {
-                pending_fut.set(Some(f(&item)));
-                *pending_item = Some(item);
+            } else if let Some(item) = ready!(this.stream.as_mut().poll_next(cx)) {
+                this.pending_fut.set(Some((this.f)(&item)));
+                *this.pending_item = Some(item);
             } else {
                 break None;
             }

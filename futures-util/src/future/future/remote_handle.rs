@@ -16,7 +16,7 @@ use {
         },
         thread,
     },
-    pin_project::{pin_project, project},
+    pin_project::pin_project,
 };
 
 /// The handle to a remote future returned by
@@ -90,23 +90,21 @@ impl<Fut: Future + fmt::Debug> fmt::Debug for Remote<Fut> {
 impl<Fut: Future> Future for Remote<Fut> {
     type Output = ();
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        #[project]
-        let Remote { tx, keep_running, future } = self.project();
+        let this = self.project();
 
-        if let Poll::Ready(_) = tx.as_mut().unwrap().poll_canceled(cx) {
-            if !keep_running.load(Ordering::SeqCst) {
+        if let Poll::Ready(_) = this.tx.as_mut().unwrap().poll_canceled(cx) {
+            if !this.keep_running.load(Ordering::SeqCst) {
                 // Cancelled, bail out
                 return Poll::Ready(())
             }
         }
 
-        let output = ready!(future.poll(cx));
+        let output = ready!(this.future.poll(cx));
 
         // if the receiving end has gone away then that's ok, we just ignore the
         // send error here.
-        drop(tx.take().unwrap().send(output));
+        drop(this.tx.take().unwrap().send(output));
         Poll::Ready(())
     }
 }

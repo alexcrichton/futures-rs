@@ -3,7 +3,7 @@ use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`skip`](super::StreamExt::skip) method.
 #[pin_project]
@@ -35,22 +35,21 @@ impl<St: FusedStream> FusedStream for Skip<St> {
 impl<St: Stream> Stream for Skip<St> {
     type Item = St::Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<St::Item>> {
-        #[project]
-        let Skip { mut stream, remaining } = self.project();
-        while *remaining > 0 {
-            if ready!(stream.as_mut().poll_next(cx)).is_some() {
-                *remaining -= 1;
+        let mut this = self.project();
+
+        while *this.remaining > 0 {
+            if ready!(this.stream.as_mut().poll_next(cx)).is_some() {
+                *this.remaining -= 1;
             } else {
                 return Poll::Ready(None);
             }
         }
 
-        stream.poll_next(cx)
+        this.stream.poll_next(cx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

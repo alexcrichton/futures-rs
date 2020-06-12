@@ -5,7 +5,7 @@ use futures_core::future::Future;
 use futures_core::stream::Stream;
 use futures_core::task::{Context, Poll};
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Sink for the [`with`](super::SinkExt::with) method.
 #[pin_project]
@@ -71,20 +71,18 @@ impl<Si, Item, U, Fut, F, E> With<Si, Item, U, Fut, F>
     delegate_access_inner!(sink, Si, ());
 
     /// Completes the processing of previous item if any.
-    #[project]
     fn poll(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), E>> {
-        #[project]
-        let With { mut state, sink, .. } = self.project();
+        let mut this = self.project();
 
-        let item = match state.as_mut().as_pin_mut() {
+        let item = match this.state.as_mut().as_pin_mut() {
             None => return Poll::Ready(Ok(())),
             Some(fut) => ready!(fut.poll(cx))?,
         };
-        state.set(None);
-        sink.start_send(item)?;
+        this.state.set(None);
+        this.sink.start_send(item)?;
         Poll::Ready(Ok(()))
     }
 }
@@ -106,16 +104,14 @@ impl<Si, Item, U, Fut, F, E> Sink<U> for With<Si, Item, U, Fut, F>
         Poll::Ready(Ok(()))
     }
 
-    #[project]
     fn start_send(
         self: Pin<&mut Self>,
         item: U,
     ) -> Result<(), Self::Error> {
-        #[project]
-        let With { mut state, f, .. } = self.project();
+        let mut this = self.project();
 
-        assert!(state.is_none());
-        state.set(Some(f(item)));
+        assert!(this.state.is_none());
+        this.state.set(Some((this.f)(item)));
         Ok(())
     }
 

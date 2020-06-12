@@ -1,9 +1,9 @@
 use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future, TryFuture};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
-#[pin_project]
+#[pin_project(project = TryFlattenErrProj)]
 #[derive(Debug)]
 pub enum TryFlattenErr<Fut1, Fut2> {
     First(#[pin] Fut1),
@@ -35,12 +35,10 @@ impl<Fut> Future for TryFlattenErr<Fut, Fut::Error>
 {
     type Output = Result<Fut::Ok, <Fut::Error as TryFuture>::Error>;
 
-    #[project]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Ready(loop {
-            #[project]
             match self.as_mut().project() {
-                TryFlattenErr::First(f) => {
+                TryFlattenErrProj::First(f) => {
                     match ready!(f.try_poll(cx)) {
                         Err(f) => self.set(TryFlattenErr::Second(f)),
                         Ok(e) => {
@@ -49,12 +47,12 @@ impl<Fut> Future for TryFlattenErr<Fut, Fut::Error>
                         }
                     }
                 },
-                TryFlattenErr::Second(f) => {
+                TryFlattenErrProj::Second(f) => {
                     let output = ready!(f.try_poll(cx));
                     self.set(TryFlattenErr::Empty);
                     break output;
                 },
-                TryFlattenErr::Empty => panic!("TryFlattenErr polled after completion"),
+                TryFlattenErrProj::Empty => panic!("TryFlattenErr polled after completion"),
             }
         })
     }

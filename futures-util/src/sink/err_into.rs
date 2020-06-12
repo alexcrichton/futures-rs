@@ -1,7 +1,7 @@
 use crate::sink::{SinkExt, SinkMapErr};
 use futures_core::stream::{Stream, FusedStream};
 use futures_sink::{Sink};
-use pin_project::{pin_project};
+use pin_project::pin_project;
 
 /// Sink for the [`sink_err_into`](super::SinkExt::sink_err_into) method.
 #[pin_project]

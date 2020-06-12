@@ -2,7 +2,7 @@ use core::pin::Pin;
 use futures_core::future::Future;
 use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Creates a stream of a single element.
 ///
@@ -39,16 +39,14 @@ impl<Fut> Once<Fut> {
 impl<Fut: Future> Stream for Once<Fut> {
     type Item = Fut::Output;
 
-    #[project]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Once { mut future } = self.project();
-        let v = match future.as_mut().as_pin_mut() {
+        let mut this = self.project();
+        let v = match this.future.as_mut().as_pin_mut() {
             Some(fut) => ready!(fut.poll(cx)),
             None => return Poll::Ready(None),
         };
 
-        future.set(None);
+        this.future.set(None);
         Poll::Ready(Some(v))
     }
 

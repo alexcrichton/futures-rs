@@ -2,7 +2,7 @@ use core::pin::Pin;
 use futures_core::future::Future;
 use futures_core::stream::TryStream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`try_concat`](super::TryStreamExt::try_concat) method.
 #[pin_project]
@@ -34,19 +34,18 @@ where
 {
     type Output = Result<St::Ok, St::Error>;
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[project]
-        let TryConcat { mut stream, accum } = self.project();
+        let mut this = self.project();
+
         Poll::Ready(Ok(loop {
-            if let Some(x) = ready!(stream.as_mut().try_poll_next(cx)?) {
-                if let Some(a) = accum {
+            if let Some(x) = ready!(this.stream.as_mut().try_poll_next(cx)?) {
+                if let Some(a) = this.accum {
                     a.extend(x)
                 } else {
-                    *accum = Some(x)
+                    *this.accum = Some(x)
                 }
             } else {
-                break accum.take().unwrap_or_default();
+                break this.accum.take().unwrap_or_default();
             }
         }))
     }

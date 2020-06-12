@@ -5,7 +5,7 @@ use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 // FIXME: docs, tests
 
@@ -121,26 +121,24 @@ where
 {
     type Item = St::Item;
 
-    #[project]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<St::Item>> {
-        #[project]
-        let TakeUntil { stream, mut fut, fut_result, free } = self.project();
+        let mut this = self.project();
 
-        if let Some(f) = fut.as_mut().as_pin_mut() {
+        if let Some(f) = this.fut.as_mut().as_pin_mut() {
             if let Poll::Ready(result) = f.poll(cx) {
-                fut.set(None);
-                *fut_result = Some(result);
+                this.fut.set(None);
+                *this.fut_result = Some(result);
             }
         }
 
-        if !*free && fut.is_none() {
+        if !*this.free && this.fut.is_none() {
             // Future resolved, inner stream stopped
             Poll::Ready(None)
         } else {
             // Future either not resolved yet or taken out by the user
-            let item = ready!(stream.poll_next(cx));
+            let item = ready!(this.stream.poll_next(cx));
             if item.is_none() {
-                fut.set(None);
+                this.fut.set(None);
             }
             Poll::Ready(item)
         }

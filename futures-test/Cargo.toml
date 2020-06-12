@@ -19,7 +19,7 @@ futures-util = { version = "0.3.5", path = "../futures-util", default-features =
 futures-executor = { version = "0.3.5", path = "../futures-executor", default-features = false }
 pin-utils = { version = "0.1.0", default-features = false }
 once_cell = { version = "1.3.1", default-features = false, features = ["std"], optional = true }
-pin-project = "0.4.15"
+pin-project = "0.4.20"
 
 [dev-dependencies]
 futures = { version = "0.3.5", path = "../futures", default-features = false, features = ["std", "executor"] }

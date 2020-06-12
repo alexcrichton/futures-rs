@@ -5,7 +5,7 @@ use futures_core::stream::{Stream, TryStream, FusedStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`or_else`](super::TryStreamExt::or_else) method.
 #[pin_project]
@@ -50,24 +50,22 @@ impl<St, Fut, F> Stream for OrElse<St, Fut, F>
 {
     type Item = Result<St::Ok, Fut::Error>;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let OrElse { mut stream, mut future, f } = self.project();
+        let mut this = self.project();
 
         Poll::Ready(loop {
-            if let Some(fut) = future.as_mut().as_pin_mut() {
+            if let Some(fut) = this.future.as_mut().as_pin_mut() {
                 let item = ready!(fut.try_poll(cx));
-                future.set(None);
+                this.future.set(None);
                 break Some(item);
             } else {
-                match ready!(stream.as_mut().try_poll_next(cx)) {
+                match ready!(this.stream.as_mut().try_poll_next(cx)) {
                     Some(Ok(item)) => break Some(Ok(item)),
                     Some(Err(e)) => {
-                        future.set(Some(f(e)));
+                        this.future.set(Some((this.f)(e)));
                     },
                     None => break None,
                 }

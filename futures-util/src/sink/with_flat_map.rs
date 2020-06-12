@@ -4,7 +4,7 @@ use core::pin::Pin;
 use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Sink for the [`with_flat_map`](super::SinkExt::with_flat_map) method.
 #[pin_project]
@@ -52,31 +52,29 @@ where
 
     delegate_access_inner!(sink, Si, ());
 
-    #[project]
     fn try_empty_stream(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Si::Error>> {
-        #[project]
-        let WithFlatMap { mut sink, mut stream, buffer, .. } = self.project();
+        let mut this = self.project();
 
-        if buffer.is_some() {
-            ready!(sink.as_mut().poll_ready(cx))?;
-            let item = buffer.take().unwrap();
-            sink.as_mut().start_send(item)?;
+        if this.buffer.is_some() {
+            ready!(this.sink.as_mut().poll_ready(cx))?;
+            let item = this.buffer.take().unwrap();
+            this.sink.as_mut().start_send(item)?;
         }
-        if let Some(mut some_stream) = stream.as_mut().as_pin_mut() {
+        if let Some(mut some_stream) = this.stream.as_mut().as_pin_mut() {
             while let Some(item) = ready!(some_stream.as_mut().poll_next(cx)?) {
-                match sink.as_mut().poll_ready(cx)? {
-                    Poll::Ready(()) => sink.as_mut().start_send(item)?,
+                match this.sink.as_mut().poll_ready(cx)? {
+                    Poll::Ready(()) => this.sink.as_mut().start_send(item)?,
                     Poll::Pending => {
-                        *buffer = Some(item);
+                        *this.buffer = Some(item);
                         return Poll::Pending;
                     }
                 };
             }
         }
-        stream.set(None);
+        this.stream.set(None);
         Poll::Ready(Ok(()))
     }
 }
@@ -119,16 +117,14 @@ where
         self.try_empty_stream(cx)
     }
 
-    #[project]
     fn start_send(
         self: Pin<&mut Self>,
         item: U,
     ) -> Result<(), Self::Error> {
-        #[project]
-        let WithFlatMap { mut stream, f, .. } = self.project();
+        let mut this = self.project();
 
-        assert!(stream.is_none());
-        stream.set(Some(f(item)));
+        assert!(this.stream.is_none());
+        this.stream.set(Some((this.f)(item)));
         Ok(())
     }
 

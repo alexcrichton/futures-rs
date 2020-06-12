@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::stream::{FusedStream, TryStream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`try_collect`](super::TryStreamExt::try_collect) method.
 #[pin_project]
@@ -41,17 +41,15 @@ where
 {
     type Output = Result<C, St::Error>;
 
-    #[project]
     fn poll(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
-        #[project]
-        let TryCollect { mut stream, items } = self.project();
+        let mut this = self.project();
         Poll::Ready(Ok(loop {
-            match ready!(stream.as_mut().try_poll_next(cx)?) {
-                Some(x) => items.extend(Some(x)),
-                None => break mem::replace(items, Default::default()),
+            match ready!(this.stream.as_mut().try_poll_next(cx)?) {
+                Some(x) => this.items.extend(Some(x)),
+                None => break mem::replace(this.items, Default::default()),
             }
         }))
     }

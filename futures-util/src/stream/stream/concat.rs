@@ -2,7 +2,7 @@ use core::pin::Pin;
 use futures_core::future::{Future, FusedFuture};
 use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`concat`](super::StreamExt::concat) method.
 #[pin_project]
@@ -34,23 +34,21 @@ where St: Stream,
 {
     type Output = St::Item;
 
-    #[project]
     fn poll(
         self: Pin<&mut Self>, cx: &mut Context<'_>
     ) -> Poll<Self::Output> {
-        #[project]
-        let Concat { mut stream, accum } = self.project();
+        let mut this = self.project();
 
         loop {
-            match ready!(stream.as_mut().poll_next(cx)) {
+            match ready!(this.stream.as_mut().poll_next(cx)) {
                 None => {
-                    return Poll::Ready(accum.take().unwrap_or_default())
+                    return Poll::Ready(this.accum.take().unwrap_or_default())
                 }
                 Some(e) => {
-                    if let Some(a) = accum {
+                    if let Some(a) = this.accum {
                         a.extend(e)
                     } else {
-                        *accum = Some(e)
+                        *this.accum = Some(e)
                     }
                 }
             }

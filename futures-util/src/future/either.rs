@@ -4,11 +4,11 @@ use futures_core::future::{FusedFuture, Future};
 use futures_core::stream::{FusedStream, Stream};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Combines two different futures, streams, or sinks having the same associated types into a single
 /// type.
-#[pin_project]
+#[pin_project(project = EitherProj)]
 #[derive(Debug, Clone)]
 pub enum Either<A, B> {
     /// First branch of the type
@@ -58,12 +58,10 @@ where
 {
     type Output = A::Output;
 
-    #[project]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<A::Output> {
-        #[project]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project() {
-            Either::Left(x) => x.poll(cx),
-            Either::Right(x) => x.poll(cx),
+            EitherProj::Left(x) => x.poll(cx),
+            EitherProj::Right(x) => x.poll(cx),
         }
     }
 }
@@ -88,12 +86,10 @@ where
 {
     type Item = A::Item;
 
-    #[project]
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<A::Item>> {
-        #[project]
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.project() {
-            Either::Left(x) => x.poll_next(cx),
-            Either::Right(x) => x.poll_next(cx),
+            EitherProj::Left(x) => x.poll_next(cx),
+            EitherProj::Right(x) => x.poll_next(cx),
         }
     }
 }
@@ -119,39 +115,31 @@ where
 {
     type Error = A::Error;
 
-    #[project]
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        #[project]
         match self.project() {
-            Either::Left(x) => x.poll_ready(cx),
-            Either::Right(x) => x.poll_ready(cx),
+            EitherProj::Left(x) => x.poll_ready(cx),
+            EitherProj::Right(x) => x.poll_ready(cx),
         }
     }
 
-    #[project]
     fn start_send(self: Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
-        #[project]
         match self.project() {
-            Either::Left(x) => x.start_send(item),
-            Either::Right(x) => x.start_send(item),
+            EitherProj::Left(x) => x.start_send(item),
+            EitherProj::Right(x) => x.start_send(item),
         }
     }
 
-    #[project]
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        #[project]
         match self.project() {
-            Either::Left(x) => x.poll_flush(cx),
-            Either::Right(x) => x.poll_flush(cx),
+            EitherProj::Left(x) => x.poll_flush(cx),
+            EitherProj::Right(x) => x.poll_flush(cx),
         }
     }
 
-    #[project]
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        #[project]
         match self.project() {
-            Either::Left(x) => x.poll_close(cx),
-            Either::Right(x) => x.poll_close(cx),
+            EitherProj::Left(x) => x.poll_close(cx),
+            EitherProj::Right(x) => x.poll_close(cx),
         }
     }
 }
@@ -182,29 +170,25 @@ mod if_std {
             }
         }
 
-        #[project]
         fn poll_read(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
             buf: &mut [u8],
         ) -> Poll<Result<usize>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_read(cx, buf),
-                Either::Right(x) => x.poll_read(cx, buf),
+                EitherProj::Left(x) => x.poll_read(cx, buf),
+                EitherProj::Right(x) => x.poll_read(cx, buf),
             }
         }
 
-        #[project]
         fn poll_read_vectored(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
             bufs: &mut [IoSliceMut<'_>],
         ) -> Poll<Result<usize>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_read_vectored(cx, bufs),
-                Either::Right(x) => x.poll_read_vectored(cx, bufs),
+                EitherProj::Left(x) => x.poll_read_vectored(cx, bufs),
+                EitherProj::Right(x) => x.poll_read_vectored(cx, bufs),
             }
         }
     }
@@ -214,47 +198,39 @@ mod if_std {
         A: AsyncWrite,
         B: AsyncWrite,
     {
-        #[project]
         fn poll_write(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<Result<usize>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_write(cx, buf),
-                Either::Right(x) => x.poll_write(cx, buf),
+                EitherProj::Left(x) => x.poll_write(cx, buf),
+                EitherProj::Right(x) => x.poll_write(cx, buf),
             }
         }
 
-        #[project]
         fn poll_write_vectored(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
             bufs: &[IoSlice<'_>],
         ) -> Poll<Result<usize>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_write_vectored(cx, bufs),
-                Either::Right(x) => x.poll_write_vectored(cx, bufs),
+                EitherProj::Left(x) => x.poll_write_vectored(cx, bufs),
+                EitherProj::Right(x) => x.poll_write_vectored(cx, bufs),
             }
         }
 
-        #[project]
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_flush(cx),
-                Either::Right(x) => x.poll_flush(cx),
+                EitherProj::Left(x) => x.poll_flush(cx),
+                EitherProj::Right(x) => x.poll_flush(cx),
             }
         }
 
-        #[project]
         fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_close(cx),
-                Either::Right(x) => x.poll_close(cx),
+                EitherProj::Left(x) => x.poll_close(cx),
+                EitherProj::Right(x) => x.poll_close(cx),
             }
         }
     }
@@ -264,16 +240,14 @@ mod if_std {
         A: AsyncSeek,
         B: AsyncSeek,
     {
-        #[project]
         fn poll_seek(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
             pos: SeekFrom,
         ) -> Poll<Result<u64>> {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.poll_seek(cx, pos),
-                Either::Right(x) => x.poll_seek(cx, pos),
+                EitherProj::Left(x) => x.poll_seek(cx, pos),
+                EitherProj::Right(x) => x.poll_seek(cx, pos),
             }
         }
     }
@@ -283,24 +257,17 @@ mod if_std {
         A: AsyncBufRead,
         B: AsyncBufRead,
     {
-        #[project]
-        fn poll_fill_buf(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Result<&[u8]>> {
-            #[project]
+        fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
             match self.project() {
-                Either::Left(x) => x.poll_fill_buf(cx),
-                Either::Right(x) => x.poll_fill_buf(cx),
+                EitherProj::Left(x) => x.poll_fill_buf(cx),
+                EitherProj::Right(x) => x.poll_fill_buf(cx),
             }
         }
 
-        #[project]
         fn consume(self: Pin<&mut Self>, amt: usize) {
-            #[project]
             match self.project() {
-                Either::Left(x) => x.consume(amt),
-                Either::Right(x) => x.consume(amt),
+                EitherProj::Left(x) => x.consume(amt),
+                EitherProj::Right(x) => x.consume(amt),
             }
         }
     }

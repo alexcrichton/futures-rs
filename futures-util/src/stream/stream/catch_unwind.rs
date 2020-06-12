@@ -1,6 +1,6 @@
 use futures_core::stream::{Stream, FusedStream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 use std::any::Any;
 use std::pin::Pin;
 use std::panic::{catch_unwind, UnwindSafe, AssertUnwindSafe};
@@ -26,25 +26,23 @@ impl<St: Stream + UnwindSafe> CatchUnwind<St> {
 impl<St: Stream + UnwindSafe> Stream for CatchUnwind<St> {
     type Item = Result<St::Item, Box<dyn Any + Send>>;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let CatchUnwind { stream, caught_unwind } = self.project();
+        let mut this = self.project();
 
-        if *caught_unwind {
+        if *this.caught_unwind {
             Poll::Ready(None)
         } else {
             let res = catch_unwind(AssertUnwindSafe(|| {
-                stream.poll_next(cx)
+                this.stream.as_mut().poll_next(cx)
             }));
 
             match res {
                 Ok(poll) => poll.map(|opt| opt.map(Ok)),
                 Err(e) => {
-                    *caught_unwind = true;
+                    *this.caught_unwind = true;
                     Poll::Ready(Some(Err(e)))
                 },
             }

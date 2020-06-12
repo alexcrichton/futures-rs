@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future};
 use futures_core::stream::Stream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`fold`](super::StreamExt::fold) method.
 #[pin_project]
@@ -64,21 +64,19 @@ impl<St, Fut, T, F> Future for Fold<St, Fut, T, F>
 {
     type Output = T;
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        #[project]
-        let Fold { mut stream, f, accum, mut future } = self.project();
+        let mut this = self.project();
         Poll::Ready(loop {
-            if let Some(fut) = future.as_mut().as_pin_mut() {
+            if let Some(fut) = this.future.as_mut().as_pin_mut() {
                 // we're currently processing a future to produce a new accum value
-                *accum = Some(ready!(fut.poll(cx)));
-                future.set(None);
-            } else if accum.is_some() {
+                *this.accum = Some(ready!(fut.poll(cx)));
+                this.future.set(None);
+            } else if this.accum.is_some() {
                 // we're waiting on a new item from the stream
-                let res = ready!(stream.as_mut().poll_next(cx));
-                let a = accum.take().unwrap();
+                let res = ready!(this.stream.as_mut().poll_next(cx));
+                let a = this.accum.take().unwrap();
                 if let Some(item) = res {
-                    future.set(Some(f(a, item)));
+                    this.future.set(Some((this.f)(a, item)));
                 } else {
                     break a;
                 }

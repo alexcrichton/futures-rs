@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::{FusedFuture, Future, TryFuture};
 use futures_core::stream::TryStream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`try_fold`](super::TryStreamExt::try_fold) method.
 #[pin_project]
@@ -64,25 +64,24 @@ impl<St, Fut, T, F> Future for TryFold<St, Fut, T, F>
 {
     type Output = Result<T, St::Error>;
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[project]
-        let TryFold { mut stream, f, accum, mut future } = self.project();
+        let mut this = self.project();
+
         Poll::Ready(loop {
-            if let Some(fut) = future.as_mut().as_pin_mut() {
+            if let Some(fut) = this.future.as_mut().as_pin_mut() {
                 // we're currently processing a future to produce a new accum value
                 let res = ready!(fut.try_poll(cx));
-                future.set(None);
+                this.future.set(None);
                 match res {
-                    Ok(a) => *accum = Some(a),
+                    Ok(a) => *this.accum = Some(a),
                     Err(e) => break Err(e),
                 }
-            } else if accum.is_some() {
+            } else if this.accum.is_some() {
                 // we're waiting on a new item from the stream
-                let res = ready!(stream.as_mut().try_poll_next(cx));
-                let a = accum.take().unwrap();
+                let res = ready!(this.stream.as_mut().try_poll_next(cx));
+                let a = this.accum.take().unwrap();
                 match res {
-                    Some(Ok(item)) => future.set(Some(f(a, item))),
+                    Some(Ok(item)) => this.future.set(Some((this.f)(a, item))),
                     Some(Err(e)) => break Err(e),
                     None => break Ok(a),
                 }

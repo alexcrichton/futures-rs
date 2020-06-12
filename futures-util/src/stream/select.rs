@@ -2,7 +2,7 @@ use crate::stream::{StreamExt, Fuse};
 use core::pin::Pin;
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`select()`] function.
 #[pin_project]
@@ -87,18 +87,15 @@ impl<St1, St2> Stream for Select<St1, St2>
 {
     type Item = St1::Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<St1::Item>> {
-        #[project]
-        let Select { flag, stream1, stream2 } = self.project();
-
-        if !*flag {
-            poll_inner(flag, stream1, stream2, cx)
+        let this = self.project();
+        if !*this.flag {
+            poll_inner(this.flag, this.stream1, this.stream2, cx)
         } else {
-            poll_inner(flag, stream2, stream1, cx)
+            poll_inner(this.flag, this.stream2, this.stream1, cx)
         }
     }
 }

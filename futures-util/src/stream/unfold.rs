@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::Future;
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Creates a `Stream` from a seed and a closure returning a `Future`.
 ///
@@ -93,24 +93,22 @@ impl<T, F, Fut, Item> Stream for Unfold<T, F, Fut>
 {
     type Item = Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[project]
-        let Unfold { state, f, mut fut } = self.project();
+        let mut this = self.project();
 
-        if let Some(state) = state.take() {
-            fut.set(Some(f(state)));
+        if let Some(state) = this.state.take() {
+            this.fut.set(Some((this.f)(state)));
         }
 
-        let step = ready!(fut.as_mut().as_pin_mut()
+        let step = ready!(this.fut.as_mut().as_pin_mut()
             .expect("Unfold must not be polled after it returned `Poll::Ready(None)`").poll(cx));
-        fut.set(None);
+        this.fut.set(None);
 
         if let Some((item, next_state)) = step {
-            *state = Some(next_state);
+            *this.state = Some(next_state);
             Poll::Ready(Some(item))
         } else {
             Poll::Ready(None)

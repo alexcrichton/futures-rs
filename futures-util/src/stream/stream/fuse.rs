@@ -3,7 +3,7 @@ use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`fuse`](super::StreamExt::fuse) method.
 #[pin_project]
@@ -41,21 +41,19 @@ impl<S: Stream> FusedStream for Fuse<S> {
 impl<S: Stream> Stream for Fuse<S> {
     type Item = S::Item;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<S::Item>> {
-        #[project]
-        let Fuse { stream, done } = self.project();
+        let this = self.project();
 
-        if *done {
+        if *this.done {
             return Poll::Ready(None);
         }
 
-        let item = ready!(stream.poll_next(cx));
+        let item = ready!(this.stream.poll_next(cx));
         if item.is_none() {
-            *done = true;
+            *this.done = true;
         }
         Poll::Ready(item)
     }

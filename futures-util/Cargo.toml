@@ -46,7 +46,7 @@ memchr = { version = "2.2", optional = true }
 futures_01 = { version = "0.1.25", optional = true, package = "futures" }
 tokio-io = { version = "0.1.9", optional = true }
 pin-utils = "0.1.0"
-pin-project = "0.4.15"
+pin-project = "0.4.20"
 
 [dev-dependencies]
 futures = { path = "../futures", version = "0.3.5", features = ["async-await", "thread-pool"] }

@@ -5,7 +5,7 @@ use futures_core::stream::{Stream, TryStream, FusedStream};
 use futures_core::task::{Context, Poll};
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Stream for the [`try_filter_map`](super::TryStreamExt::try_filter_map)
 /// method.
@@ -57,24 +57,23 @@ impl<St, Fut, F, T> Stream for TryFilterMap<St, Fut, F>
 {
     type Item = Result<T, St::Error>;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<T, St::Error>>> {
-        #[project]
-        let TryFilterMap { mut stream, f, mut pending } = self.project();
+    ) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
         Poll::Ready(loop {
-            if let Some(p) = pending.as_mut().as_pin_mut() {
+            if let Some(p) = this.pending.as_mut().as_pin_mut() {
                 // We have an item in progress, poll that until it's done
                 let item = ready!(p.try_poll(cx)?);
-                pending.set(None);
+                this.pending.set(None);
                 if item.is_some() {
                     break item.map(Ok);
                 }
-            } else if let Some(item) = ready!(stream.as_mut().try_poll_next(cx)?) {
+            } else if let Some(item) = ready!(this.stream.as_mut().try_poll_next(cx)?) {
                 // No item in progress, but the stream is still going
-                pending.set(Some(f(item)));
+                this.pending.set(Some((this.f)(item)));
             } else {
                 // The stream is done
                 break None;

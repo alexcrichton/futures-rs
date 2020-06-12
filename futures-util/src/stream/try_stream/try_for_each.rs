@@ -3,7 +3,7 @@ use core::pin::Pin;
 use futures_core::future::{Future, TryFuture};
 use futures_core::stream::TryStream;
 use futures_core::task::{Context, Poll};
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 /// Future for the [`try_for_each`](super::TryStreamExt::try_for_each) method.
 #[pin_project]
@@ -50,17 +50,15 @@ impl<St, Fut, F> Future for TryForEach<St, Fut, F>
 {
     type Output = Result<(), St::Error>;
 
-    #[project]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[project]
-        let TryForEach { mut stream, f, mut future } = self.project();
+        let mut this = self.project();
         loop {
-            if let Some(fut) = future.as_mut().as_pin_mut() {
+            if let Some(fut) = this.future.as_mut().as_pin_mut() {
                 ready!(fut.try_poll(cx))?;
-                future.set(None);
+                this.future.set(None);
             } else {
-                match ready!(stream.as_mut().try_poll_next(cx)?) {
-                    Some(e) => future.set(Some(f(e))),
+                match ready!(this.stream.as_mut().try_poll_next(cx)?) {
+                    Some(e) => this.future.set(Some((this.f)(e))),
                     None => break,
                 }
             }
