@@ -18,23 +18,23 @@ use pin_project::pin_project;
 /// the moment.
 const NONE: u8 = 0;
 
-/// Indicates that `futures` need to be polled.
-const NEED_TO_POLL_FUTURES: u8 = 1;
+/// Indicates that `inner_streams` need to be polled.
+const NEED_TO_POLL_INNER_STREAMS: u8 = 1;
 
 /// Indicates that `stream` needs to be polled.
 const NEED_TO_POLL_STREAM: u8 = 0b10;
 
 /// Indicates that it needs to poll something.
-const NEED_TO_POLL_BOTH: u8 = NEED_TO_POLL_FUTURES | NEED_TO_POLL_STREAM;
+const NEED_TO_POLL_ALL: u8 = NEED_TO_POLL_INNER_STREAMS | NEED_TO_POLL_STREAM;
 
-/// Indicates that current stream is polled at the moment.
+/// Indicates that current stream is being polled at the moment.
 const POLLING: u8 = 0b100;
 
 // Indicates that it already called one of wakers.
 const WOKEN: u8 = 0b1000;
 
-/// State which used to determine what needs to be polled, and are we polling
-/// stream at the moment or not.
+/// Determines what needs to be polled, and is stream being polled at the
+/// moment or not.
 #[derive(Clone, Debug)]
 struct SharedPollState {
     state: Arc<AtomicU8>,
@@ -61,10 +61,14 @@ impl SharedPollState {
 
     /// Performs bitwise or with `to_poll` and current state, stores result
     /// with non-`POLLING` state, and returns disjunction result.
-    fn end_polling(&self, mut to_poll: u8) -> u8 {
-        to_poll |= self.state.swap(!POLLING & !WOKEN, Ordering::SeqCst);
-        self.state.swap(to_poll & !POLLING & !WOKEN, Ordering::SeqCst);
-        to_poll
+    fn end_polling(&self, to_poll: u8) -> u8 {
+        let poll_state = to_poll | self.state.swap(to_poll & !POLLING & !WOKEN, Ordering::SeqCst);
+
+        if to_poll & NEED_TO_POLL_ALL != poll_state & NEED_TO_POLL_ALL {
+            self.state.swap(poll_state & !POLLING & !WOKEN, Ordering::SeqCst);
+        }
+
+        poll_state
     }
 }
 
@@ -151,19 +155,19 @@ impl<St: Stream> Future for PollStreamFut<St> {
     }
 }
 
-/// Stream for the [`flat_map_unordered`](super::StreamExt::flat_map_unordered)
+/// Stream for the [`flatten_unordered`](super::StreamExt::flatten_unordered)
 /// method.
 #[pin_project]
 #[must_use = "streams do nothing unless polled"]
 pub struct FlattenUnordered<St, U> {
     #[pin]
-    futures: FuturesUnordered<PollStreamFut<U>>,
+    inner_streams: FuturesUnordered<PollStreamFut<U>>,
     #[pin]
     stream: St,
     poll_state: SharedPollState,
     limit: Option<NonZeroUsize>,
     is_stream_done: bool,
-    futures_waker: Arc<PollWaker>,
+    inner_streams_waker: Arc<PollWaker>,
     stream_waker: Arc<PollWaker>
 }
 
@@ -175,7 +179,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FlattenUnordered")
             .field("poll_state", &self.poll_state)
-            .field("futures", &self.futures)
+            .field("inner_streams", &self.inner_streams)
             .field("limit", &self.limit)
             .field("stream", &self.stream)
             .field("is_stream_done", &self.is_stream_done)
@@ -189,19 +193,17 @@ where
     St::Item: Stream,
 {
     pub(super) fn new(stream: St, limit: Option<usize>) -> FlattenUnordered<St, St::Item> {
-        // Because to create first future, it needs to get inner
-        // stream from `stream`
         let poll_state = SharedPollState::new(NEED_TO_POLL_STREAM);
 
         FlattenUnordered {
-            futures: FuturesUnordered::new(),
+            inner_streams: FuturesUnordered::new(),
             stream,
             is_stream_done: false,
             limit: limit.and_then(NonZeroUsize::new),
-            futures_waker: Arc::new(PollWaker {
+            inner_streams_waker: Arc::new(PollWaker {
                 inner_waker: UnsafeCell::new(None),
                 poll_state: poll_state.clone(),
-                need_to_poll: NEED_TO_POLL_FUTURES,
+                need_to_poll: NEED_TO_POLL_INNER_STREAMS,
             }),
             stream_waker: Arc::new(PollWaker {
                 inner_waker: UnsafeCell::new(None),
@@ -212,10 +214,10 @@ where
         }
     }
 
-    /// Checks if current `futures` size is less than optional limit.
+    /// Checks if current `inner_streams` size is less than optional limit.
     fn is_exceeded_limit(&self) -> bool {
         self.limit
-            .map(|limit| self.futures.len() >= limit.get())
+            .map(|limit| self.inner_streams.len() >= limit.get())
             .unwrap_or(false)
     }
 
@@ -228,7 +230,7 @@ where
     St::Item: FusedStream,
 {
     fn is_terminated(&self) -> bool {
-        self.futures.is_empty() && self.stream.is_terminated()
+        self.inner_streams.is_empty() && self.stream.is_terminated()
     }
 }
 
@@ -243,17 +245,19 @@ where
         let mut next_item = None;
         let mut need_to_poll_next = NONE;
         let mut stream_will_be_woken = self.is_exceeded_limit();
-        let mut futures_will_be_woken = false;
+        let mut inner_streams_will_be_woken = false;
         
         let mut this = self.project();
 
         let mut poll_state_value = this.poll_state.begin_polling();
 
-        if poll_state_value & NEED_TO_POLL_BOTH == NONE {
-            poll_state_value = NEED_TO_POLL_STREAM | if this.futures.is_empty() { NONE } else { NEED_TO_POLL_FUTURES };
+        if poll_state_value & NEED_TO_POLL_ALL == NONE {
+            poll_state_value = 
+                NEED_TO_POLL_STREAM | if this.inner_streams.is_empty() { NONE } else { NEED_TO_POLL_INNER_STREAMS };
         }
 
-        let mut polling_with_two_wakers = poll_state_value & NEED_TO_POLL_BOTH == NEED_TO_POLL_BOTH && !stream_will_be_woken;
+        let mut polling_with_two_wakers = 
+            poll_state_value & NEED_TO_POLL_ALL == NEED_TO_POLL_ALL && !stream_will_be_woken;
 
         if poll_state_value & NEED_TO_POLL_STREAM != NONE {
             if !stream_will_be_woken {
@@ -266,17 +270,17 @@ where
                     this.stream.as_mut().poll_next(ctx)
                 } {
                     Poll::Ready(Some(inner_stream)) => {
-                        this.futures.as_mut().push(PollStreamFut::new(inner_stream));
+                        this.inner_streams.as_mut().push(PollStreamFut::new(inner_stream));
                         need_to_poll_next |= NEED_TO_POLL_STREAM;
-                        // Polling futures in current iteration with the same context
+                        // Polling inner streams in current iteration with the same context
                         // is ok because we already received `Poll::Ready` from
                         // stream
-                        poll_state_value |= NEED_TO_POLL_FUTURES;
+                        poll_state_value |= NEED_TO_POLL_INNER_STREAMS;
                         polling_with_two_wakers = false;
                         *this.is_stream_done = false;
                     }
                     Poll::Ready(None) => {
-                        // Polling futures in current iteration with the same context
+                        // Polling inner streams in current iteration with the same context
                         // is ok because we already received `Poll::Ready` from
                         // stream
                         polling_with_two_wakers = false;
@@ -295,42 +299,42 @@ where
             }
         }
 
-        if poll_state_value & NEED_TO_POLL_FUTURES != NONE {
+        if poll_state_value & NEED_TO_POLL_INNER_STREAMS != NONE {
             match if polling_with_two_wakers {
                 // Safety: now state is `POLLING`.
-                let waker = unsafe { PollWaker::replace_waker(this.futures_waker, ctx) };
+                let waker = unsafe { PollWaker::replace_waker(this.inner_streams_waker, ctx) };
                 let mut ctx = Context::from_waker(&waker);
-                this.futures.as_mut().poll_next(&mut ctx)
+                this.inner_streams.as_mut().poll_next(&mut ctx)
             } else {
-                this.futures.as_mut().poll_next(ctx)
+                this.inner_streams.as_mut().poll_next(ctx)
             } {
                 Poll::Ready(Some(Some((item, next_item_fut)))) => {
-                    this.futures.as_mut().push(next_item_fut);
+                    this.inner_streams.as_mut().push(next_item_fut);
                     next_item = Some(item);
-                    need_to_poll_next |= NEED_TO_POLL_FUTURES;
+                    need_to_poll_next |= NEED_TO_POLL_INNER_STREAMS;
                 }
                 Poll::Ready(Some(None)) => {
-                    need_to_poll_next |= NEED_TO_POLL_FUTURES;
+                    need_to_poll_next |= NEED_TO_POLL_INNER_STREAMS;
                 }
                 Poll::Pending => {
-                    futures_will_be_woken = true;
+                    inner_streams_will_be_woken = true;
                     if !polling_with_two_wakers {
-                        need_to_poll_next |= NEED_TO_POLL_FUTURES;
+                        need_to_poll_next |= NEED_TO_POLL_INNER_STREAMS;
                     }
                 }
                 Poll::Ready(None) => {
-                    need_to_poll_next &= !NEED_TO_POLL_FUTURES;
+                    need_to_poll_next &= !NEED_TO_POLL_INNER_STREAMS;
                 }
             }
         }
 
         let poll_state_value = this.poll_state.end_polling(need_to_poll_next);
 
-        let is_done = *this.is_stream_done && this.futures.is_empty();
+        let is_done = *this.is_stream_done && this.inner_streams.is_empty();
 
-        if !is_done && poll_state_value & WOKEN == NONE && poll_state_value & NEED_TO_POLL_BOTH != NONE
+        if !is_done && poll_state_value & WOKEN == NONE && poll_state_value & NEED_TO_POLL_ALL != NONE
             && (polling_with_two_wakers
-                || poll_state_value & NEED_TO_POLL_FUTURES != NONE && !futures_will_be_woken
+                || poll_state_value & NEED_TO_POLL_INNER_STREAMS != NONE && !inner_streams_will_be_woken
                     || poll_state_value & NEED_TO_POLL_STREAM != NONE && !stream_will_be_woken)
         {
             ctx.waker().wake_by_ref();
