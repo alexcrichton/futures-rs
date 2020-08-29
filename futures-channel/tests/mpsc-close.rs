@@ -69,7 +69,7 @@ fn multiple_senders_disconnect() {
 #[test]
 fn multiple_senders_close_channel() {
     {
-        let (mut tx1, mut rx) = mpsc::channel(1);
+        let (tx1, mut rx) = mpsc::channel(1);
         let mut tx2 = tx1.clone();
 
         // close_channel should shut down the whole channel
