@@ -19,7 +19,7 @@ use futures_core::{
 #[cfg(feature = "sink")]
 use futures_sink::Sink;
 
-use crate::fns::{InspectFn, inspect_fn};
+use crate::fns::{inspect_fn, InspectFn};
 
 mod chain;
 #[allow(unreachable_pub)] // https://github.com/rust-lang/rust/issues/57411
@@ -48,7 +48,7 @@ pub use self::filter_map::FilterMap;
 mod flatten;
 
 delegate_all!(
-    /// Stream for the [`inspect`](StreamExt::inspect) method.
+    /// Stream for the [`flatten`](StreamExt::flatten) method.
     Flatten<St>(
         flatten::Flatten<St, St::Item>
     ): Debug + Sink + Stream + FusedStream + AccessInner[St, (.)] + New[|x: St| flatten::Flatten::new(x)]
@@ -163,6 +163,27 @@ cfg_target_has_atomic! {
     #[cfg(feature = "alloc")]
     #[allow(unreachable_pub)] // https://github.com/rust-lang/rust/issues/57411
     pub use self::buffer_unordered::BufferUnordered;
+
+    #[cfg(feature = "alloc")]
+    mod flatten_unordered;
+
+    #[cfg(feature = "alloc")]
+    delegate_all!(
+        /// Stream for the [`inspect`](StreamExt::inspect) method.
+        FlattenUnordered<St>(
+            flatten_unordered::FlattenUnordered<St, St::Item>
+        ): Debug + Sink + Stream + FusedStream + AccessInner[St, (.)] + New[|x: St, limit: Option<usize>| flatten_unordered::FlattenUnordered::new(x, limit)]
+        where St: Stream, St::Item: Stream
+    );
+
+    #[cfg(feature = "alloc")]
+    delegate_all!(
+        /// Stream for the [`flat_map`](StreamExt::flat_map) method.
+        FlatMapUnordered<St, U, F>(
+            FlattenUnordered<Map<St, F>>
+        ): Debug + Sink + Stream + FusedStream + AccessInner[St, (. .)] + New[|x: St, limit: Option<usize>, f: F| FlattenUnordered::new(Map::new(x, f), limit)]
+        where St: Stream, U: Stream, F: FnMut(St::Item) -> U
+    );
 
     #[cfg(feature = "alloc")]
     mod buffered;
@@ -577,13 +598,57 @@ pub trait StreamExt: Stream {
         Flatten::new(self)
     }
 
+    /// Flattens a stream of streams into just one continuous stream. Polls
+    /// inner streams concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures::executor::block_on(async {
+    /// use futures::channel::mpsc;
+    /// use futures::stream::StreamExt;
+    /// use std::thread;
+    ///
+    /// let (tx1, rx1) = mpsc::unbounded();
+    /// let (tx2, rx2) = mpsc::unbounded();
+    /// let (tx3, rx3) = mpsc::unbounded();
+    ///
+    /// thread::spawn(move || {
+    ///     tx1.unbounded_send(1).unwrap();
+    ///     tx1.unbounded_send(2).unwrap();
+    /// });
+    /// thread::spawn(move || {
+    ///     tx2.unbounded_send(3).unwrap();
+    ///     tx2.unbounded_send(4).unwrap();
+    /// });
+    /// thread::spawn(move || {
+    ///     tx3.unbounded_send(rx1).unwrap();
+    ///     tx3.unbounded_send(rx2).unwrap();
+    /// });
+    ///
+    /// let mut output = rx3.flatten_unordered(None).collect::<Vec<i32>>().await;
+    /// output.sort();
+    ///
+    /// assert_eq!(output, vec![1, 2, 3, 4]);
+    /// # });
+    /// ```
+    #[cfg_attr(feature = "cfg-target-has-atomic", cfg(target_has_atomic = "ptr"))]
+    #[cfg(feature = "alloc")]
+    fn flatten_unordered(self, limit: impl Into<Option<usize>>) -> FlattenUnordered<Self>
+    where
+        Self::Item: Stream,
+        Self: Sized,
+    {
+        FlattenUnordered::new(self, limit.into())
+    }
+
     /// Maps a stream like [`StreamExt::map`] but flattens nested `Stream`s.
     ///
     /// [`StreamExt::map`] is very useful, but if it produces a `Stream` instead,
     /// you would have to chain combinators like `.map(f).flatten()` while this
     /// combinator provides ability to write `.flat_map(f)` instead of chaining.
     ///
-    /// The provided closure which produce inner streams is executed over all elements
+    /// The provided closure which produces inner streams is executed over all elements
     /// of stream as last inner stream is terminated and next stream item is available.
     ///
     /// Note that this function consumes the stream passed into it and returns a
@@ -611,7 +676,59 @@ pub trait StreamExt: Stream {
         FlatMap::new(self, f)
     }
 
-    /// Combinator similar to [`StreamExt::fold`] that holds internal state 
+    /// Maps a stream like [`StreamExt::map`] but flattens nested `Stream`s
+    /// and polls them concurrently, yielding items in any order, as they made
+    /// available.
+    ///
+    /// [`StreamExt::map`] is very useful, but if it produces `Stream`s
+    /// instead, and you need to poll all of them concurrently, you would
+    /// have to use something like `for_each_concurrent` and merge values
+    /// by hand. This combinator provides ability to collect all values
+    /// from concurrently polled streams into one stream.
+    ///
+    /// The first argument is an optional limit on the number of concurrently
+    /// polled streams. If this limit is not `None`, no more than `limit` streams
+    /// will be polled concurrently. The `limit` argument is of type
+    /// `Into<Option<usize>>`, and so can be provided as either `None`,
+    /// `Some(10)`, or just `10`. Note: a limit of zero is interpreted as
+    /// no limit at all, and will have the same result as passing in `None`.
+    ///
+    /// The provided closure which produces inner streams is executed over
+    /// all elements of stream as next stream item is available and limit
+    /// of concurrently processed streams isn't exceeded.
+    ///
+    /// Note that this function consumes the stream passed into it and
+    /// returns a wrapped version of it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures::executor::block_on(async {
+    /// use futures::stream::{self, StreamExt};
+    ///
+    /// let stream = stream::iter(1..5);
+    /// let stream = stream.flat_map_unordered(1, |x| stream::iter(vec![x; x]));
+    /// let mut values = stream.collect::<Vec<_>>().await;
+    /// values.sort();
+    ///
+    /// assert_eq!(vec![1usize, 2, 2, 3, 3, 3, 4, 4, 4, 4], values);
+    /// # });
+    #[cfg_attr(feature = "cfg-target-has-atomic", cfg(target_has_atomic = "ptr"))]
+    #[cfg(feature = "alloc")]
+    fn flat_map_unordered<U, F>(
+        self,
+        limit: impl Into<Option<usize>>,
+        f: F,
+    ) -> FlatMapUnordered<Self, U, F>
+    where
+        U: Stream,
+        F: FnMut(Self::Item) -> U,
+        Self: Sized,
+    {
+        FlatMapUnordered::new(self, limit.into(), f)
+    }
+
+    /// Combinator similar to [`StreamExt::fold`] that holds internal state
     /// and produces a new stream.
     ///
     /// Accepts initial state and closure which will be applied to each element
@@ -1231,8 +1348,8 @@ pub trait StreamExt: Stream {
     /// This method will panic if `capacity` is zero.
     #[cfg(feature = "alloc")]
     fn ready_chunks(self, capacity: usize) -> ReadyChunks<Self>
-        where
-            Self: Sized,
+    where
+        Self: Sized,
     {
         ReadyChunks::new(self, capacity)
     }

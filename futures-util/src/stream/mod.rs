@@ -32,7 +32,7 @@ pub use self::stream::Forward;
 
 #[cfg_attr(feature = "cfg-target-has-atomic", cfg(target_has_atomic = "ptr"))]
 #[cfg(feature = "alloc")]
-pub use self::stream::{BufferUnordered, Buffered, ForEachConcurrent};
+pub use self::stream::{BufferUnordered, FlatMapUnordered, FlattenUnordered, Buffered, ForEachConcurrent};
 
 #[cfg_attr(feature = "cfg-target-has-atomic", cfg(target_has_atomic = "ptr"))]
 #[cfg(feature = "sink")]

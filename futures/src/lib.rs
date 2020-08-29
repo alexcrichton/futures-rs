@@ -471,7 +471,7 @@ pub mod stream {
 
         // For StreamExt:
         BufferUnordered, Buffered, ForEachConcurrent, SplitStream, SplitSink,
-        ReuniteError,
+        ReuniteError, FlatMapUnordered, FlattenUnordered,
 
         select_all, SelectAll,
     };
