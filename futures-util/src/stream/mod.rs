@@ -19,7 +19,7 @@ pub use self::stream::{
 };
 
 #[cfg(feature = "std")]
-pub use self::stream::CatchUnwind;
+pub use self::stream::{CatchUnwind, Shared};
 
 #[cfg(feature = "alloc")]
 pub use self::stream::Chunks;
