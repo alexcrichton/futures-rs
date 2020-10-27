@@ -16,6 +16,8 @@ pub use self::rwlock::{
 };
 #[cfg(feature = "std")]
 pub(crate) mod waiter;
+#[cfg(feature = "std")]
+pub(crate) mod backoff;
 
 #[cfg(any(feature = "bilock", feature = "sink", feature = "io"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "bilock")))]

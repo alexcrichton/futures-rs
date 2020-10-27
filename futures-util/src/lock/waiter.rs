@@ -1,14 +1,10 @@
+use crate::lock::backoff::Backoff;
 use slab::Slab;
-use std::cell::{Cell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::mem;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{spin_loop_hint, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::Waker;
-use std::thread::yield_now;
-
-// Taken from crossbeam_utils
-const SPIN_LIMIT: u32 = 6;
-const YIELD_LIMIT: u32 = 10;
 
 #[allow(clippy::identity_op)]
 const IS_LOCKED: usize = 1 << 0;
@@ -142,30 +138,20 @@ impl WaiterSet {
         notified
     }
 
-    fn lock(&self) -> Lock<'_> {
-        let step = Cell::new(0u32);
+    fn lock(&self) -> WaiterSetGuard<'_> {
+        let backoff = Backoff::new();
         while self.state.fetch_or(IS_LOCKED, Ordering::Acquire) & IS_LOCKED != 0 {
-            if step.get() <= SPIN_LIMIT {
-                for _ in 0..1 << step.get() {
-                    spin_loop_hint();
-                }
-            } else {
-                yield_now();
-            }
-            if step.get() <= YIELD_LIMIT {
-                step.set(step.get() + 1);
-            }
+            backoff.snooze();
         }
-
-        Lock { waiter_set: self }
+        WaiterSetGuard { waiter_set: self }
     }
 }
 
-struct Lock<'a> {
+struct WaiterSetGuard<'a> {
     waiter_set: &'a WaiterSet,
 }
 
-impl Drop for Lock<'_> {
+impl Drop for WaiterSetGuard<'_> {
     fn drop(&mut self) {
         let mut state = 0;
 
@@ -181,7 +167,7 @@ impl Drop for Lock<'_> {
     }
 }
 
-impl Deref for Lock<'_> {
+impl Deref for WaiterSetGuard<'_> {
     type Target = Inner;
 
     fn deref(&self) -> &Inner {
@@ -189,7 +175,7 @@ impl Deref for Lock<'_> {
     }
 }
 
-impl DerefMut for Lock<'_> {
+impl DerefMut for WaiterSetGuard<'_> {
     fn deref_mut(&mut self) -> &mut Inner {
         unsafe { &mut *self.waiter_set.inner.get() }
     }
