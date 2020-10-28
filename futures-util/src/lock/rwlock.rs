@@ -162,7 +162,7 @@ impl<T: ?Sized> RwLock<T> {
     pub fn read(&self) -> RwLockReadFuture<'_, T> {
         RwLockReadFuture {
             rwlock: Some(self),
-            ticket: None,
+            phase: None,
             wait_key: WAIT_KEY_NONE,
         }
     }
@@ -236,27 +236,12 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-#[derive(Debug)]
-enum Ticket {
-    Read(usize),
-    Write(usize),
-}
-
-impl Ticket {
-    fn value(&self) -> usize {
-        match self {
-            Ticket::Read(value) => *value,
-            Ticket::Write(value) => *value,
-        }
-    }
-}
-
 /// A future which resolves when the target read access lock has been successfully
 /// acquired.
 pub struct RwLockReadFuture<'a, T: ?Sized> {
     // `None` indicates that the mutex was successfully acquired.
     rwlock: Option<&'a RwLock<T>>,
-    ticket: Option<Ticket>,
+    phase: Option<usize>,
     wait_key: usize,
 }
 
@@ -265,7 +250,7 @@ impl<T: ?Sized> fmt::Debug for RwLockReadFuture<'_, T> {
         f.debug_struct("RwLockReadFuture")
             .field("was_acquired", &self.rwlock.is_none())
             .field("rwlock", &self.rwlock)
-            .field("ticket", &self.ticket)
+            .field("phase", &self.phase)
             .field(
                 "wait_key",
                 &(if self.wait_key == WAIT_KEY_NONE {
@@ -292,19 +277,16 @@ impl<'a, T: ?Sized> Future for RwLockReadFuture<'a, T> {
             .rwlock
             .expect("polled RwLockReadFuture after completion");
 
-        // The ticket is defined by the write bits stored within the read-in count
-        let ticket = self
-            .ticket
-            .get_or_insert_with(|| Ticket::Read(rwlock.atomic.reserve_reader()))
-            .value();
+        // The phase is defined by the write bits stored within the read-in count
+        let phase = *self.phase.get_or_insert_with(|| rwlock.atomic.reserve_reader());
 
-        // Safe to create guard when either there are no writers (ticket == 0) or if
+        // Safe to create guard when either there are no writers (phase == 0) or if
         // at least one of the two write bits change.
         // Writers always wait until the current reader phase completes before acquiring
         // the lock; thus the PHASE bit both maintains the read-write condition and
         // prevents deadlock in the case that this line isn't reached before a writer sets
         // the ONE_WRITER bit.
-        if ticket == 0 || ticket != rwlock.atomic.phase() {
+        if phase == 0 || phase != rwlock.atomic.phase() {
             if self.wait_key != WAIT_KEY_NONE {
                 rwlock.readers.remove(self.wait_key);
             }
@@ -327,6 +309,12 @@ impl<T: ?Sized> Drop for RwLockReadFuture<'_, T> {
             panic!("RwLockReadFuture dropped before completion");
         }
     }
+}
+
+#[derive(Debug)]
+enum Ticket {
+    Read(usize),
+    Write(usize),
 }
 
 /// A future which resolves when the target write access lock has been successfully
