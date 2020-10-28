@@ -5,8 +5,8 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::RwLock as StdRwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock as StdRwLock;
 
 #[allow(clippy::identity_op)]
 const PHASE: usize = 1 << 0;
@@ -41,6 +41,12 @@ impl AtomicState {
     #[inline]
     fn remove_reader(&self) -> usize {
         self.read.out.fetch_add(ONE_READER, Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    #[inline]
+    fn waiting_readers(&self) -> usize {
+        self.read.ins.load(Ordering::Relaxed)
     }
 
     #[inline]
@@ -98,7 +104,25 @@ pub struct RwLock<T: ?Sized> {
 
 impl<T: ?Sized> fmt::Debug for RwLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RwLock").finish()
+        f.debug_struct("RwLock")
+            .field("phase", &format!("{:#b}", self.atomic.phase()))
+            .field(
+                "read_ins",
+                &format!("{:#b}", self.atomic.read.ins.load(Ordering::Relaxed)),
+            )
+            .field(
+                "read_out",
+                &format!("{:#b}", self.atomic.read.out.load(Ordering::Relaxed)),
+            )
+            .field(
+                "write_ins",
+                &format!("{:#b}", self.atomic.write.ins.load(Ordering::Relaxed)),
+            )
+            .field(
+                "write_out",
+                &format!("{:#b}", self.atomic.write.out.load(Ordering::Relaxed)),
+            )
+            .finish()
     }
 }
 
@@ -125,15 +149,6 @@ impl<T> RwLock<T> {
     }
 
     /// Consumes the read-write lock, returning the underlying data.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use futures::lock::RwLock;
-    ///
-    /// let rwlock = RwLock::new(0);
-    /// assert_eq!(rwlock.into_inner(), 0);
-    /// ```
     pub fn into_inner(self) -> T {
         self.value.into_inner()
     }
@@ -216,18 +231,6 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Since this call borrows the lock mutably, no actual locking needs to
     /// take place -- the mutable borrow statically guarantees no locks exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # futures::executor::block_on(async {
-    /// use futures::lock::RwLock;
-    ///
-    /// let mut rwlock = RwLock::new(0);
-    /// *rwlock.get_mut() = 10;
-    /// assert_eq!(*rwlock.read().await, 10);
-    /// # });
-    /// ```
     pub fn get_mut(&mut self) -> &mut T {
         unsafe { &mut *self.value.get() }
     }
@@ -518,3 +521,113 @@ unsafe impl<T: ?Sized + Sync> Sync for RwLockReadGuard<'_, T> {}
 
 unsafe impl<T: ?Sized + Send> Send for RwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for RwLockWriteGuard<'_, T> {}
+
+#[cfg(test)]
+use futures::executor::{block_on, ThreadPool};
+#[cfg(test)]
+use futures::join;
+
+#[test]
+fn single_read() {
+    block_on(async {
+        let rwlock = RwLock::new(0);
+        assert_eq!(*rwlock.read().await, 0);
+    })
+}
+
+#[test]
+fn multiple_reads() {
+    let pool = ThreadPool::new().unwrap();
+    pool.spawn_ok(async {
+        let rwlock = RwLock::new(0);
+        join!(rwlock.read(), rwlock.read(), rwlock.read());
+    })
+}
+
+#[test]
+fn single_thread_multiple_reads() {
+    block_on(async {
+        let rwlock = RwLock::new(0);
+        let guard1 = rwlock.read().await;
+        let guard2 = rwlock.read().await;
+        assert_eq!(*guard1, *guard2);
+    })
+}
+
+#[test]
+fn single_write() {
+    block_on(async {
+        let rwlock = RwLock::new(0);
+        *rwlock.write().await += 1;
+        assert_eq!(*rwlock.read().await, 1);
+    })
+}
+
+#[test]
+fn write_among_two_reads() {
+    let pool = ThreadPool::new().unwrap();
+    pool.spawn_ok(async {
+        let rwlock = RwLock::new(0);
+        join!(rwlock.write(), rwlock.read(), rwlock.read());
+    })
+}
+
+#[test]
+fn two_writes_among_two_reads() {
+    let pool = ThreadPool::new().unwrap();
+    pool.spawn_ok(async {
+        let rwlock = RwLock::new(0);
+        join!(rwlock.write(), rwlock.read(), rwlock.write(), rwlock.read());
+    })
+}
+
+#[test]
+fn read_state_progression() {
+    block_on(async {
+        let rwlock = RwLock::new(0);
+        let guard1 = rwlock.read().await;
+        assert_eq!(rwlock.atomic.waiting_readers(), 1 << 2);
+        let guard2 = rwlock.read().await;
+        assert_eq!(rwlock.atomic.waiting_readers(), 2 << 2);
+        assert_eq!(rwlock.atomic.finished_readers(), 0);
+        drop(guard1);
+        drop(guard2);
+        assert_eq!(rwlock.atomic.finished_readers(), 2 << 2);
+    })
+}
+
+#[test]
+fn write_state_progression() {
+    block_on(async {
+        let rwlock = RwLock::new(0);
+        let guard1 = rwlock.write().await;
+        assert_eq!(rwlock.atomic.waiting_writers(), 1);
+        assert_eq!(rwlock.atomic.phase(), 2);
+        drop(guard1);
+        assert_eq!(rwlock.atomic.phase(), 0);
+        let guard2 = rwlock.write().await;
+        assert_eq!(rwlock.atomic.waiting_writers(), 2);
+        assert_eq!(rwlock.atomic.phase(), 3);
+        drop(guard2);
+        assert_eq!(rwlock.atomic.finished_writers(), 2);
+    })
+}
+
+#[test]
+fn try_read_and_write() {
+    let rwlock = RwLock::new(0);
+    let mut guard = rwlock.try_write().unwrap();
+    assert!(rwlock.try_read().is_none());
+    assert_eq!(rwlock.atomic.phase(), 1);
+    *guard += 1;
+    drop(guard);
+    let guard = rwlock.try_read().unwrap();
+    assert!(rwlock.try_write().is_none());
+    assert_eq!(*guard, 1);
+    drop(guard);
+    assert_eq!(rwlock.atomic.phase(), 0);
+    assert_eq!(rwlock.atomic.waiting_readers(), 1 << 2);
+    assert_eq!(rwlock.atomic.finished_readers(), 1 << 2);
+    assert_eq!(rwlock.atomic.waiting_writers(), 1);
+    assert_eq!(rwlock.atomic.finished_writers(), 1);
+}
