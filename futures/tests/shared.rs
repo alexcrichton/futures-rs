@@ -214,6 +214,20 @@ fn dont_do_unnecessary_clones_on_output() {
 }
 
 #[test]
+fn ready() {
+    use futures::executor::block_on;
+    use futures::future::{FutureExt, Shared};
+
+    let mut futs = Vec::new();
+    futs.push(futures::future::ready(0).shared());
+    futs.push(Shared::ready(1));
+
+    assert_eq!(futs[1].peek(), Some(&1));
+
+    assert_eq!(block_on(futures::future::join_all(futs)), &[0, 1]);
+}
+
+#[test]
 fn shared_future_that_wakes_itself_until_pending_is_returned() {
     use futures::executor::block_on;
     use futures::future::FutureExt;
