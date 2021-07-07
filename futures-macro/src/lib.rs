@@ -19,6 +19,7 @@ use proc_macro::TokenStream;
 mod executor;
 mod join;
 mod select;
+mod stream_select;
 
 /// The `join!` macro.
 #[cfg_attr(fn_like_proc_macro, proc_macro)]
@@ -53,4 +54,11 @@ pub fn select_biased_internal(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn test_internal(input: TokenStream, item: TokenStream) -> TokenStream {
     crate::executor::test(input, item)
+}
+
+/// The `stream_select!` macro.
+#[cfg_attr(fn_like_proc_macro, proc_macro)]
+#[cfg_attr(not(fn_like_proc_macro), proc_macro_hack::proc_macro_hack)]
+pub fn stream_select_internal(input: TokenStream) -> TokenStream {
+    crate::stream_select::stream_select(input)
 }

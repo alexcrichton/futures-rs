@@ -137,6 +137,11 @@ pub use futures_util::{join, pending, poll, select_biased, try_join}; // Async-a
 #[doc(inline)]
 pub use futures_util::{future, sink, stream, task};
 
+#[cfg(feature = "std")]
+#[cfg(feature = "async-await")]
+pub use futures_util::stream_select;
+
+#[cfg_attr(feature = "cfg-target-has-atomic", cfg(target_has_atomic = "ptr"))]
 #[cfg(feature = "alloc")]
 #[doc(inline)]
 pub use futures_channel as channel;
