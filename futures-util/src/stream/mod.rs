@@ -89,6 +89,9 @@ pub use self::pending::{pending, Pending};
 mod poll_fn;
 pub use self::poll_fn::{poll_fn, PollFn};
 
+mod poll_immediate;
+pub use self::poll_immediate::{poll_immediate, PollImmediate};
+
 mod select;
 pub use self::select::{select, Select};
 
