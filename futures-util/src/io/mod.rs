@@ -148,6 +148,9 @@ mod write_all_vectored;
 #[cfg(feature = "write-all-vectored")]
 pub use self::write_all_vectored::WriteAllVectored;
 
+mod sequenced;
+pub use self::sequenced::Sequenced;
+
 /// An extension trait which adds utility methods to `AsyncRead` types.
 pub trait AsyncReadExt: AsyncRead {
     /// Creates an adaptor which will chain this stream with another.
